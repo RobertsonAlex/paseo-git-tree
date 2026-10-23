@@ -22,6 +22,9 @@ A [Paseo](https://paseo.sh) plugin that draws the current workspace's branch his
 | **Expandable cards** | Click a commit to expand full detail (author, date, parents, message body, per-file diff). Expanded cards refresh in place on fetch/reload. |
 | **Rename-aware files** | File lists show R status with old ⟶ new paths. |
 | **Manual refresh** | ↻ button in the panel header. |
+| **Folder workspaces** | When the workspace folder isn't a repo, it lists the repos inside as cards, with each repo's worktree folders, branch and changed-file count; drill into any folder or start its workspace. |
+| **Submodules** | A strip under the header shows each submodule's branch, state and dirtiness; drill in to see where the parent's pointer sits in its graph. |
+| **Fast load** | The graph renders as soon as `git log` returns; the uncommitted summary and submodule status fill in in the background. Large or binary untracked files are not line-counted. |
 
 ## Install
 
@@ -104,6 +107,20 @@ Rebase, force push, and delete ask for a second confirming click.
 
 Right-click a file for **Filter commits by this file** (fills in `f: <path>`) or **Copy path**.
 
+### Folder workspaces
+
+If the workspace folder is not itself a git repo, the panel shows a card per repo found under it (the scan stops at each repo root and skips `node_modules`). Each card lists the repo's folders — main checkout and worktrees — as `branch · N changed`, filled in after the cards appear, plus a warning badge when a submodule is off or dirty.
+
+- Click a folder to drill into its graph; back returns to the list.
+- **Start workspace** opens or creates a Paseo workspace for that folder.
+- ↻ rescans the folder; results are otherwise cached for the daemon run.
+
+### Submodules
+
+A strip under the header lists each submodule with its branch (or `detached`), a state badge (`doesn't match parent`, `not initialised`, `conflict`), and a `dirty` badge when it has uncommitted changes. Click one to drill into its own graph and branch list; uninitialised ones can't be opened. Nested submodules open one level at a time.
+
+In a submodule's graph, chips mark `parent expects` (the parent's index), `checked out`, and `parent's last commit` when HEAD records a different commit than the index, so you can judge the distance between them. Branch and commit actions stay live inside, and going back refreshes the parent's status.
+
 ## Plugin structure
 
 ```
@@ -112,7 +129,14 @@ paseo-git-tree/
 ├── index.client.tsx         # Client entry: workspace panel registration
 ├── index.server.ts          # Server entry: RPC handler registration
 ├── client/git-tree-panel.tsx # Panel UI (React Native) — client bundle
-├── server/git-tree.ts       # git subprocess wrapper — server bundle
+├── client/repo-list.tsx     # Folder-workspace repo cards
+├── client/submodule-strip.tsx # Submodule strip under the header
+├── server/git-tree.ts       # RPC handlers — server bundle
+├── server/git.ts            # git subprocess helpers
+├── server/cache.ts          # In-memory result cache
+├── server/status.ts         # Uncommitted summary + submodule status
+├── server/repos.ts          # Folder scan + worktree grouping
+├── server/test-helpers.ts   # Temp-repo fixtures for server tests
 ├── shared/git-tree.ts       # Zod RPC contracts + pure graph/layout algorithms
 ├── shared/git-tree.test.ts  # Logic tests (node:test) incl. seeded random cases
 ├── package.json
@@ -130,7 +154,7 @@ bundle compiles only `client/` + `shared/`, the server bundle only `server/` + `
 npm test
 ```
 
-Pure logic tests on the node built-in test runner, with no UI dependencies:
+`npm test` runs `shared/*.test.ts` and `server/*.test.ts` on the node built-in test runner, with no UI dependencies:
 
 - Hand-picked edge cases: empty graph, single root, linear chains, fork/merge/octopus merges, multi-child convergence, ref parsing and scope rules, list-geometry round-trips.
 - Programmatically generated cases: a seeded PRNG (mulberry32) builds random commit DAGs, ref decorations, and list-geometry parameters, then checks structural invariants — lane continuity, color assignment, `itemOffset`/`indexAtY` inversion, window coverage.
