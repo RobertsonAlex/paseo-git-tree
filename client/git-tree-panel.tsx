@@ -2826,6 +2826,12 @@ export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps)
   /** Stable key so a fresh extraRefs array with the same hashes doesn't reload. */
   const extraRefsKey = extraRefs?.join(",") ?? "";
 
+  // A new directory drops the old status and orphans any in-flight status call.
+  useEffect(() => {
+    statusGen.current++;
+    setStatus(null);
+  }, [directory]);
+
   /** Status is background work: a cached answer is shown, then refreshed. */
   const loadStatus = useCallback(
     (fresh: boolean, followUp: boolean) => {
