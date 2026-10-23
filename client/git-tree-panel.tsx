@@ -2780,12 +2780,13 @@ type ViewEntry =
       label: string;
       extraRefs?: string[];
       marks?: Record<string, string[]>;
+      markCheckedOut?: boolean;
       refreshOnMount?: boolean;
     }
   | { kind: "folder"; directory: string };
 
 /** Drill-in entry for submodule `s` of the repo at `dir`, with its parent's
- *  pointers and the checked-out commit marked on the graph. */
+ *  pointers marked on the graph. "checked out" is derived live by RepoView. */
 function submoduleEntry(dir: string, s: Submodule): ViewEntry {
   const marks: Record<string, string[]> = {};
   const add = (hash: string | null, label: string) => {
@@ -2793,13 +2794,13 @@ function submoduleEntry(dir: string, s: Submodule): ViewEntry {
   };
   add(s.expected, "parent expects");
   if (s.committed !== s.expected) add(s.committed, "parent's last commit");
-  add(s.checkedOut, "checked out");
   return {
     kind: "repo",
     directory: `${dir.replace(/[\\/]+$/, "")}/${s.path}`,
     label: s.path,
     extraRefs: [s.expected, s.committed].filter((h): h is string => Boolean(h)),
     marks,
+    markCheckedOut: true,
   };
 }
 
@@ -2923,6 +2924,7 @@ export function GitTreePanel({ theme, layout, workspaceId, navigation }: PluginW
       layout={layout}
       extraRefs={top.extraRefs}
       marks={top.marks}
+      markCheckedOut={top.markCheckedOut}
       refreshOnMount={top.refreshOnMount}
       onOpenSubmodule={(s) => setDrill([...stack, submoduleEntry(top.directory, s)])}
       header={header}
@@ -2938,6 +2940,8 @@ type RepoViewProps = {
   extraRefs?: string[];
   /** Per-commit labels drawn as chips on rows, keyed by full hash. */
   marks?: Record<string, string[]>;
+  /** Chip the live HEAD commit "checked out" (submodule views). */
+  markCheckedOut?: boolean;
   onOpenSubmodule?: (sub: Submodule) => void;
   /** Drawn above the repo header (drill-stack back button and breadcrumb). */
   header?: ReactNode;
@@ -2951,6 +2955,7 @@ export function RepoView({
   layout,
   extraRefs,
   marks,
+  markCheckedOut,
   onOpenSubmodule,
   header,
   refreshOnMount,
@@ -3230,6 +3235,8 @@ export function RepoView({
         .then((result) => {
           if (result.error) {
             toast.error(result.error);
+            // A failed merge/rebase/pull can still leave the worktree changed.
+            loadTree({ fresh: true });
             return;
           }
           const done: Record<GitBranchOp, string> = {
@@ -3302,6 +3309,8 @@ export function RepoView({
         .then((result) => {
           if (result.error) {
             toast.error(result.error);
+            // A failed merge/rebase/pull can still leave the worktree changed.
+            loadTree({ fresh: true });
             return;
           }
           const done: Record<GitCommitOp, string> = {
@@ -3426,6 +3435,24 @@ export function RepoView({
   const triggerName = currentHead?.name ?? (heads.length > 0 ? "HEAD" : null);
   const triggerColor = currentHead ? tintFor(currentHead.name) : theme.colors.foregroundMuted;
   const errorText = data?.error ?? rpcError;
+  const missingRefs = data?.missingRefs;
+  const headHash = markCheckedOut
+    ? allRows.find((r) => r.refs.some((ref) => ref === "HEAD" || ref.startsWith("HEAD ->")))?.hash
+    : undefined;
+  /** Parent pointers this clone hasn't fetched get a suffix; they have no row,
+   *  so they're also listed in a note above the graph. */
+  const shownMarks = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const [hash, labels] of Object.entries(marks ?? {})) {
+      out[hash] = missingRefs?.includes(hash) ? labels.map((l) => `${l} (not fetched)`) : labels;
+    }
+    if (headHash) out[headHash] = [...(out[headHash] ?? []), "checked out"];
+    return out;
+  }, [marks, missingRefs, headHash]);
+  const missingNote = (missingRefs ?? [])
+    .filter((h) => shownMarks[h])
+    .map((h) => `${shownMarks[h]!.join(", ")}: ${h.slice(0, 7)}`)
+    .join(" · ");
 
   return (
     <View ref={shellRef} style={styles.screen} {...hostMenuBlock}>
@@ -3607,6 +3634,20 @@ export function RepoView({
         <SubmoduleStrip submodules={status.submodules} theme={theme} onOpen={onOpenSubmodule} />
       ) : null}
 
+      {missingNote ? (
+        <Text
+          numberOfLines={2}
+          style={{
+            color: theme.colors.foregroundMuted,
+            fontSize: 11,
+            paddingHorizontal: layout.compact ? 10 : 14,
+            paddingVertical: 4,
+          }}
+        >
+          {missingNote}
+        </Text>
+      ) : null}
+
       {errorText ? (
         <View style={styles.empty}>
           <Icon name="CircleAlert" size={18} color={theme.colors.statusDanger} />
@@ -3633,7 +3674,7 @@ export function RepoView({
           compareBase={compareBase}
           compareTarget={compareTarget}
           onCompareClick={handleCompareClick}
-          uncommitted={status?.uncommitted ?? null}
+          uncommitted={previewRef && previewRef !== currentHead?.name ? null : (status?.uncommitted ?? null)}
           directory={directory}
           theme={theme}
           onToggle={toggleCommit}
@@ -3649,7 +3690,7 @@ export function RepoView({
           heads={heads}
           remotes={remotes}
           refreshKey={refreshKey}
-          marks={marks}
+          marks={shownMarks}
         />
       )}
 
