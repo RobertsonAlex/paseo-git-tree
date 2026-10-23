@@ -36,6 +36,7 @@ import {
   parseBranchRef,
   splitRemoteRef,
 } from "../shared/git-tree";
+import { SubmoduleStrip } from "./submodule-strip";
 
 // --- Geometry ---------------------------------------------------------------
 
@@ -2175,6 +2176,7 @@ type RowColors = {
   hairline: string;
   ring: string;
   cardBg: string;
+  accent: string;
 };
 
 const CommitRow = memo(function CommitRow({
@@ -2204,6 +2206,7 @@ const CommitRow = memo(function CommitRow({
   heads,
   remotes,
   refreshKey,
+  marks,
 }: {
   row: GitTreeRow;
   prevRow: GitTreeRow | undefined;
@@ -2235,6 +2238,8 @@ const CommitRow = memo(function CommitRow({
   remotes: string[];
   /** Tree refresh generation; forwarded to expansion panels. */
   refreshKey: number;
+  /** Labels drawn as chips on this row, e.g. "parent expects". */
+  marks?: string[];
 }) {
   const cardRef = useRef<View>(null);
   const tipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2400,6 +2405,23 @@ const CommitRow = memo(function CommitRow({
                 </Text>
               </View>
             ))}
+            {marks?.map((label) => (
+              <View
+                key={label}
+                style={{
+                  backgroundColor: withAlpha(colors.accent, "28"),
+                  borderRadius: 4,
+                  paddingHorizontal: 5,
+                  paddingVertical: 1,
+                  borderWidth: 1,
+                  borderColor: withAlpha(colors.accent, "99"),
+                }}
+              >
+                <Text numberOfLines={1} style={{ fontSize: 10, color: colors.accent, fontWeight: "600" }}>
+                  {label}
+                </Text>
+              </View>
+            ))}
             {compareBase?.hash === row.hash ? (
               <View
                 style={{
@@ -2558,6 +2580,7 @@ function VirtualCommitList({
   heads,
   remotes,
   refreshKey,
+  marks,
 }: {
   rows: GitTreeRow[];
   graphW: number;
@@ -2585,6 +2608,7 @@ function VirtualCommitList({
   remotes: string[];
   /** Tree refresh generation; forwarded to commit rows. */
   refreshKey: number;
+  marks?: Record<string, string[]>;
 }) {
   const listRows = useMemo(
     () => (uncommitted ? [uncommittedRow(uncommitted), ...rows] : rows),
@@ -2730,6 +2754,7 @@ function VirtualCommitList({
               heads={heads}
               remotes={remotes}
               refreshKey={refreshKey}
+              marks={marks?.[row.hash]}
             />
           </View>
           );
@@ -2741,12 +2766,51 @@ function VirtualCommitList({
 
 // --- Panel ----------------------------------------------------------------------
 
+/** One level of the drill stack; the top entry is what the panel shows.
+ *  `refreshOnMount` is set on a repo when the user comes back to it, so its
+ *  status is re-read fresh (ops inside a submodule only drop that submodule's
+ *  server caches). */
+type ViewEntry =
+  | {
+      kind: "repo";
+      directory: string;
+      label: string;
+      extraRefs?: string[];
+      marks?: Record<string, string[]>;
+      refreshOnMount?: boolean;
+    }
+  | { kind: "folder"; directory: string };
+
+/** Drill-in entry for submodule `s` of the repo at `dir`, with its parent's
+ *  pointers and the checked-out commit marked on the graph. */
+function submoduleEntry(dir: string, s: Submodule): ViewEntry {
+  const marks: Record<string, string[]> = {};
+  const add = (hash: string | null, label: string) => {
+    if (hash) marks[hash] = [...(marks[hash] ?? []), label];
+  };
+  add(s.expected, "parent expects");
+  if (s.committed !== s.expected) add(s.committed, "parent's last commit");
+  add(s.checkedOut, "checked out");
+  return {
+    kind: "repo",
+    directory: `${dir.replace(/[\\/]+$/, "")}/${s.path}`,
+    label: s.path,
+    extraRefs: [s.expected, s.committed].filter((h): h is string => Boolean(h)),
+    marks,
+  };
+}
+
+function entryLabel(e: ViewEntry): string {
+  return e.kind === "repo" ? e.label : e.directory.split(/[\\/]/).filter(Boolean).pop() ?? e.directory;
+}
+
 export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   const workspace = useWorkspace(workspaceId, (w) => ({
     directory: w.directory,
     name: w.name,
     projectKind: w.projectKind,
   }));
+  const [drill, setDrill] = useState<ViewEntry[]>([]);
   if (!workspace) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
@@ -2758,7 +2822,59 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       </View>
     );
   }
-  return <RepoView directory={workspace.directory} theme={theme} layout={layout} />;
+  const root: ViewEntry = { kind: "repo", directory: workspace.directory, label: workspace.name };
+  // A different workspace directory starts a new stack.
+  const stack = drill[0]?.directory === workspace.directory ? drill : [root];
+  const top = stack[stack.length - 1]!;
+
+  const back = () => {
+    const next = stack.slice(0, -1);
+    const parent = next[next.length - 1];
+    if (parent?.kind === "repo") next[next.length - 1] = { ...parent, refreshOnMount: true };
+    setDrill(next);
+  };
+
+  const header =
+    stack.length > 1 ? (
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 4,
+          paddingHorizontal: layout.compact ? 6 : 10,
+          paddingVertical: 4,
+          borderBottomWidth: 1,
+          borderBottomColor: theme.colors.border + "66",
+        }}
+      >
+        <HeaderIconButton name="ChevronLeft" label="Back" colors={theme.colors} onPress={back} />
+        <Text numberOfLines={1} style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 11 }}>
+          {stack.map(entryLabel).join(" / ")}
+        </Text>
+      </View>
+    ) : null;
+
+  if (top.kind === "folder") {
+    // Task 6 renders the folder view.
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+        {header}
+      </View>
+    );
+  }
+  return (
+    <RepoView
+      key={top.directory}
+      directory={top.directory}
+      theme={theme}
+      layout={layout}
+      extraRefs={top.extraRefs}
+      marks={top.marks}
+      refreshOnMount={top.refreshOnMount}
+      onOpenSubmodule={(s) => setDrill([...stack, submoduleEntry(top.directory, s)])}
+      header={header}
+    />
+  );
 }
 
 type RepoViewProps = {
@@ -2767,13 +2883,25 @@ type RepoViewProps = {
   layout: PluginHostProps["layout"];
   /** Extra commits (submodule pointers) to include in the log. */
   extraRefs?: string[];
-  /** Per-commit labels drawn on rows (Task 4). */
+  /** Per-commit labels drawn as chips on rows, keyed by full hash. */
   marks?: Record<string, string[]>;
   onOpenSubmodule?: (sub: Submodule) => void;
+  /** Drawn above the repo header (drill-stack back button and breadcrumb). */
   header?: ReactNode;
+  /** First load bypasses the server caches (returning from a submodule). */
+  refreshOnMount?: boolean;
 };
 
-export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps) {
+export function RepoView({
+  directory,
+  theme,
+  layout,
+  extraRefs,
+  marks,
+  onOpenSubmodule,
+  header,
+  refreshOnMount,
+}: RepoViewProps) {
   const getTree = useRpc(gitTree);
   const getStatus = useRpc(gitStatus);
   const runBranch = useRpc(gitBranchOp);
@@ -2890,8 +3018,12 @@ export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps)
     [directory, getTree, scope, debouncedPath, extraRefsKey, loadStatus],
   );
 
+  /** Consumed by the first load only; later reloads (scope, filter) use the cache as usual. */
+  const freshOnMount = useRef(refreshOnMount === true);
   useEffect(() => {
-    loadTree();
+    const fresh = freshOnMount.current;
+    freshOnMount.current = false;
+    loadTree(fresh ? { fresh: true } : undefined);
   }, [loadTree]);
 
   const refresh = useCallback(() => loadTree({ sync: true, fresh: true }), [loadTree]);
@@ -3161,6 +3293,7 @@ export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps)
       hairline: theme.colors.border + "66",
       ring: theme.colors.border + "40",
       cardBg: theme.colors.surface1,
+      accent: theme.colors.accent,
     }),
     [theme],
   );
@@ -3243,6 +3376,7 @@ export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps)
 
   return (
     <View ref={shellRef} style={styles.screen} {...hostMenuBlock}>
+      {header}
       <View style={styles.header}>
         <View style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
           <Text style={styles.title} numberOfLines={1} ellipsizeMode="tail">Git Tree</Text>
@@ -3416,6 +3550,10 @@ export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps)
         </View>
       ) : null}
 
+      {onOpenSubmodule && status ? (
+        <SubmoduleStrip submodules={status.submodules} theme={theme} onOpen={onOpenSubmodule} />
+      ) : null}
+
       {errorText ? (
         <View style={styles.empty}>
           <Icon name="CircleAlert" size={18} color={theme.colors.statusDanger} />
@@ -3458,6 +3596,7 @@ export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps)
           heads={heads}
           remotes={remotes}
           refreshKey={refreshKey}
+          marks={marks}
         />
       )}
 
