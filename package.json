@@ -22,7 +22,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test shared/git-tree.test.ts"
+    "test": "node --experimental-strip-types --test shared/*.test.ts server/*.test.ts"
   },
   "devDependencies": {
     "@getpaseo/client": "0.12.0",
