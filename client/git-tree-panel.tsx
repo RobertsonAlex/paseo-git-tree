@@ -1,6 +1,7 @@
-import { useRpc, useWorkspace, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import type { PluginTheme } from "@getpaseo/plugin";
+import { useRpc, useWorkspace, type PluginHostProps, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
   commitCompare,
@@ -10,6 +11,7 @@ import {
   computeGraph,
   gitBranchOp,
   gitCommitOp,
+  gitStatus,
   gitTree,
   graphColor,
   assignRefColors,
@@ -30,6 +32,7 @@ import {
   type GitStatusOutput,
   type GitTreeOutput,
   type GitTreeRow,
+  type Submodule,
   parseBranchRef,
   splitRemoteRef,
 } from "../shared/git-tree";
@@ -2744,7 +2747,35 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     name: w.name,
     projectKind: w.projectKind,
   }));
+  if (!workspace) {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+        <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 8 }}>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, textAlign: "center" }}>
+            Workspace unavailable
+          </Text>
+        </View>
+      </View>
+    );
+  }
+  return <RepoView directory={workspace.directory} theme={theme} layout={layout} />;
+}
+
+type RepoViewProps = {
+  directory: string;
+  theme: PluginTheme;
+  layout: PluginHostProps["layout"];
+  /** Extra commits (submodule pointers) to include in the log. */
+  extraRefs?: string[];
+  /** Per-commit labels drawn on rows (Task 4). */
+  marks?: Record<string, string[]>;
+  onOpenSubmodule?: (sub: Submodule) => void;
+  header?: ReactNode;
+};
+
+export function RepoView({ directory, theme, layout, extraRefs }: RepoViewProps) {
   const getTree = useRpc(gitTree);
+  const getStatus = useRpc(gitStatus);
   const runBranch = useRpc(gitBranchOp);
   const runCommit = useRpc(gitCommitOp);
   const toast = useToast();
@@ -2752,8 +2783,9 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const branchTriggerRef = useRef<View>(null);
   const scopeTriggerRef = useRef<View>(null);
 
-  const directory = workspace?.directory ?? null;
   const [data, setData] = useState<GitTreeOutput | null>(null);
+  const [status, setStatus] = useState<GitStatusOutput | null>(null);
+  const [rpcError, setRpcError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -2783,6 +2815,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const previewHold = useRef<string | null>(null);
   previewHold.current = previewRef;
   const loadGen = useRef(0);
+  const statusGen = useRef(0);
   /** Bumped every time fresh tree data lands; expansion panels refetch their
    *  detail/diff when it changes so an open card doesn't keep stale content. */
   const [refreshKey, setRefreshKey] = useState(0);
@@ -2790,41 +2823,72 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const [scopeHover, setScopeHover] = useState(false);
   const [branchHover, setBranchHover] = useState(false);
 
+  /** Stable key so a fresh extraRefs array with the same hashes doesn't reload. */
+  const extraRefsKey = extraRefs?.join(",") ?? "";
+
+  /** Status is background work: a cached answer is shown, then refreshed. */
+  const loadStatus = useCallback(
+    (fresh: boolean, followUp: boolean) => {
+      const id = ++statusGen.current;
+      getStatus({ directory, ...(fresh ? { fresh: true } : {}) })
+        .then((next) => {
+          if (id !== statusGen.current) return;
+          setStatus(next);
+          if (next.cached && !fresh && followUp) loadStatus(true, false);
+        })
+        // Background only: keep the last status; the graph shows its own errors.
+        .catch(() => {});
+    },
+    [directory, getStatus],
+  );
+
+  /** First load serves the cache (fresh: false) and, when it was a hit,
+   *  re-fetches fresh under the same loadGen guard. Refresh and post-op
+   *  reloads pass fresh: true. */
   const loadTree = useCallback(
-    (opts?: { sync?: boolean; preview?: string | null }) => {
+    (opts?: { sync?: boolean; fresh?: boolean; preview?: string | null }) => {
       if (!directory) return;
       const preview = opts && "preview" in opts ? opts.preview : previewHold.current;
       const id = ++loadGen.current;
       setLoading(true);
-      getTree({
-        directory,
-        limit: COMMIT_LIMIT,
-        scope,
-        ...(debouncedPath ? { path: debouncedPath } : {}),
-        ...(preview ? { preview } : {}),
-        ...(opts?.sync ? { sync: true } : {}),
-      })
-        .then((next) => {
+      const fetchTree = (fresh: boolean): Promise<void> =>
+        getTree({
+          directory,
+          limit: COMMIT_LIMIT,
+          scope,
+          ...(debouncedPath ? { path: debouncedPath } : {}),
+          ...(preview ? { preview } : {}),
+          ...(extraRefsKey ? { extraRefs: extraRefsKey.split(",") } : {}),
+          ...(opts?.sync ? { sync: true } : {}),
+          ...(fresh ? { fresh: true } : {}),
+        }).then((next) => {
+          if (id !== loadGen.current) return;
+          setData(next);
+          setRpcError(null);
+          setRefreshKey((k) => k + 1);
+          const refetch = next.cached && !fresh;
+          // A cached graph is followed by a fresh one, which loads fresh status itself.
+          loadStatus(fresh, !refetch);
+          if (refetch) return fetchTree(true);
+        });
+      fetchTree(opts?.fresh ?? false)
+        .catch((err: unknown) => {
           if (id === loadGen.current) {
-            setData(next);
-            setRefreshKey((k) => k + 1);
+            setRpcError(`Couldn't load the graph: ${err instanceof Error ? err.message : String(err)}`);
           }
-        })
-        .catch(() => {
-          if (id === loadGen.current) setData(null);
         })
         .finally(() => {
           if (id === loadGen.current) setLoading(false);
         });
     },
-    [directory, getTree, scope, debouncedPath],
+    [directory, getTree, scope, debouncedPath, extraRefsKey, loadStatus],
   );
 
   useEffect(() => {
     loadTree();
   }, [loadTree]);
 
-  const refresh = useCallback(() => loadTree({ sync: true }), [loadTree]);
+  const refresh = useCallback(() => loadTree({ sync: true, fresh: true }), [loadTree]);
 
   const toggleCommit = useCallback((hash: string) => {
     setExpandedHash((cur) => (cur === hash ? null : hash));
@@ -2994,7 +3058,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             previewHold.current = null;
             setPreviewRef(null);
           }
-          loadTree({ sync: true, ...(clearPreview ? { preview: null } : {}) });
+          loadTree({ sync: true, fresh: true, ...(clearPreview ? { preview: null } : {}) });
           setBranchMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
@@ -3068,7 +3132,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
             previewHold.current = null;
             setPreviewRef(null);
           }
-          loadTree({ sync: true, ...(clearPreview ? { preview: null } : {}) });
+          loadTree({ sync: true, fresh: true, ...(clearPreview ? { preview: null } : {}) });
           setMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
@@ -3145,16 +3209,6 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
     [theme, layout.compact],
   );
 
-  if (!workspace) {
-    return (
-      <View style={styles.screen}>
-        <View style={styles.empty}>
-          <Text style={styles.emptyText}>Workspace unavailable</Text>
-        </View>
-      </View>
-    );
-  }
-
   const allRows = data?.rows ?? [];
   const remotes = data?.remotes ?? [];
   const queryTrim = query.trim().toLowerCase();
@@ -3179,6 +3233,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
   const currentHead = heads.find((h) => h.isCurrent);
   const triggerName = currentHead?.name ?? (heads.length > 0 ? "HEAD" : null);
   const triggerColor = currentHead ? tintFor(currentHead.name) : theme.colors.foregroundMuted;
+  const errorText = data?.error ?? rpcError;
 
   return (
     <View ref={shellRef} style={styles.screen} {...hostMenuBlock}>
@@ -3355,12 +3410,17 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
         </View>
       ) : null}
 
-      {data?.error ? (
+      {errorText ? (
         <View style={styles.empty}>
           <Icon name="CircleAlert" size={18} color={theme.colors.statusDanger} />
-          <Text style={styles.errorText}>{data.error}</Text>
+          <Text style={styles.errorText}>{errorText}</Text>
         </View>
-      ) : rows.length === 0 && !loading ? (
+      ) : rows.length === 0 && loading ? (
+        <View style={styles.empty}>
+          <Icon name="LoaderCircle" size={18} color={theme.colors.foregroundMuted} />
+          <Text style={styles.emptyText}>Loading…</Text>
+        </View>
+      ) : rows.length === 0 ? (
         <View style={styles.empty}>
           <Icon name="GitBranch" size={18} color={theme.colors.foregroundMuted} />
           <Text style={styles.emptyText}>No commits found</Text>
@@ -3376,10 +3436,8 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           compareBase={compareBase}
           compareTarget={compareTarget}
           onCompareClick={handleCompareClick}
-          uncommitted={
-            null /* Task 3 wires gitStatus */
-          }
-          directory={directory ?? ""}
+          uncommitted={status?.uncommitted ?? null}
+          directory={directory}
           theme={theme}
           onToggle={toggleCommit}
           onToggleFile={toggleFile}
