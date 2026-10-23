@@ -97,3 +97,14 @@ test("getGitTree returns cached: true on second call without fresh", async () =>
   assert.equal(second.cached, true);
   assert.equal((await getGitTree({ directory: dir, limit: 50, scope: "current", fresh: true })).cached, false);
 });
+
+test("getGitTree cache distinguishes limit", async () => {
+  const dir = await makeTempRepo();
+  await writeFile(path.join(dir, "b.txt"), "b\n");
+  await git(dir, "add", "b.txt");
+  await git(dir, "commit", "-m", "second");
+  const one = await getGitTree({ directory: dir, limit: 1, scope: "current" });
+  const two = await getGitTree({ directory: dir, limit: 2, scope: "current" });
+  assert.equal(one.rows.length, 1);
+  assert.equal(two.rows.length, 2);
+});

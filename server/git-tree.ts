@@ -40,7 +40,7 @@ export async function getGitTree(input: Input): Promise<Output> {
   const directory = path.resolve(input.directory);
   const limit = input.limit ?? 300;
   const scope = input.scope ?? "current";
-  const key = `${directory}|${scope}|${input.path ?? ""}|${input.preview ?? ""}|${(input.extraRefs ?? []).join(",")}`;
+  const key = `${directory}|${limit}|${scope}|${input.path ?? ""}|${input.preview ?? ""}|${(input.extraRefs ?? []).join(",")}`;
   // A sync fetches from remotes, so it never serves stale data.
   if (!input.fresh && !input.sync) {
     const hit = graphCache.get(key);
