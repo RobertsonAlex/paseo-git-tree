@@ -22,6 +22,9 @@ import {
   graphColor,
   isUncommittedHash,
   uncommittedRow,
+  parseSubmoduleStatus,
+  parseGitlinks,
+  parsePorcelainV2SubmoduleDirty,
   itemOffset,
   indexAtY,
   windowRange,
@@ -517,4 +520,48 @@ test("paintGraph is deterministic (same input, same output)", () => {
   const a = computeGraph(commits, ["origin"]);
   const b = computeGraph(commits, ["origin"]);
   assert.deepEqual(a, b);
+});
+
+// --- Submodule parsers --------------------------------------------------------
+
+test("parseSubmoduleStatus reads all four flags", () => {
+  const h = (c: string) => c.repeat(40);
+  const text = [
+    ` ${h("a")} SDK (heads/main)`,
+    `+${h("d")} Agent/metaclient (v1-2-gdef)`,
+    `-${h("0")} conan/profiles`,
+    `U${h("4")} x`,
+  ].join("\n");
+  assert.deepEqual(parseSubmoduleStatus(text), [
+    { flag: " ", hash: h("a"), path: "SDK" },
+    { flag: "+", hash: h("d"), path: "Agent/metaclient" },
+    { flag: "-", hash: h("0"), path: "conan/profiles" },
+    { flag: "U", hash: h("4"), path: "x" },
+  ]);
+});
+
+test("parseGitlinks handles ls-files and ls-tree forms and skips 100644", () => {
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  const text = [
+    `160000 ${a} 0\tSDK`,
+    `160000 commit ${b}\tAgent/metaclient`,
+    `100644 ${a} 0\tREADME.md`,
+    `100644 blob ${b}\tother.txt`,
+  ].join("\n");
+  assert.deepEqual([...parseGitlinks(text)], [
+    ["SDK", a],
+    ["Agent/metaclient", b],
+  ]);
+});
+
+test("parsePorcelainV2SubmoduleDirty flags S.M. and S..U, not SC..", () => {
+  const h = "a".repeat(40);
+  const line = (sub: string, p: string) => `1 .M ${sub} 160000 160000 160000 ${h} ${h} ${p}`;
+  const text = [line("S.M.", "mod"), line("S..U", "untr"), line("SC..", "moved"), line("N...", "file.txt")].join("\n");
+  assert.deepEqual([...parsePorcelainV2SubmoduleDirty(text)], [
+    ["mod", true],
+    ["untr", true],
+    ["moved", false],
+  ]);
 });

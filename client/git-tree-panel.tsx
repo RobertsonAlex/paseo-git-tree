@@ -27,6 +27,7 @@ import {
   type CommitDiffOutput,
   type GitBranchOp,
   type GitCommitOp,
+  type GitStatusOutput,
   type GitTreeOutput,
   type GitTreeRow,
   parseBranchRef,
@@ -2564,7 +2565,7 @@ function VirtualCommitList({
   compareBase: GitTreeRow | null;
   compareTarget: GitTreeRow | null;
   onCompareClick: (row: GitTreeRow) => void;
-  uncommitted: GitTreeOutput["uncommitted"];
+  uncommitted: GitStatusOutput["uncommitted"];
   directory: string;
   theme: PluginWorkspacePanelProps["theme"];
   onToggle: (hash: string) => void;
@@ -3376,7 +3377,7 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
           compareTarget={compareTarget}
           onCompareClick={handleCompareClick}
           uncommitted={
-            previewRef && previewRef !== currentHead?.name ? null : (data?.uncommitted ?? null)
+            null /* Task 3 wires gitStatus */
           }
           directory={directory ?? ""}
           theme={theme}

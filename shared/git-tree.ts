@@ -39,6 +39,31 @@ export const rowSchema = z.object({
 export const treeScope = z.enum(["current", "local", "all"]);
 export type TreeScope = z.output<typeof treeScope>;
 
+const uncommittedSchema = z
+  .object({
+    count: z.number().int(),
+    additions: z.number().int(),
+    deletions: z.number().int(),
+    /** Untracked files (no diff stat). */
+    untracked: z.number().int(),
+  })
+  .nullable();
+
+export const submoduleSchema = z.object({
+  path: z.string(),
+  /** Gitlink in the parent index. */
+  expected: z.string().nullable(),
+  /** Gitlink in the parent HEAD. */
+  committed: z.string().nullable(),
+  /** Commit checked out in the submodule; null when uninitialised. */
+  checkedOut: z.string().nullable(),
+  /** Branch checked out in the submodule; null when detached or uninitialised. */
+  branch: z.string().nullable(),
+  state: z.enum(["ok", "mismatch", "uninitialized", "conflict"]),
+  dirty: z.boolean(),
+});
+export type Submodule = z.output<typeof submoduleSchema>;
+
 export const gitTree = defineRpc({
   name: "gittree.get",
   input: z.object({
@@ -54,6 +79,10 @@ export const gitTree = defineRpc({
     sync: z.boolean().optional(),
     /** Only commits touching this path (file or directory). Optional. */
     path: z.string().optional(),
+    /** Extra commits (e.g. submodule pointers) appended to the log refs. */
+    extraRefs: z.array(z.string().regex(/^[0-9a-f]{7,64}$/i)).optional(),
+    /** Skip the cache and recompute. */
+    fresh: z.boolean().optional(),
   }),
   output: z.object({
     rows: z.array(rowSchema),
@@ -68,23 +97,68 @@ export const gitTree = defineRpc({
     ),
     /** Remote names (`git remote`), used to pair `origin/foo` with local `foo`. */
     remotes: z.array(z.string()),
-    /** Uncommitted changes summary: index + worktree + untracked, vs HEAD.
- *  Null when clean or on a repo with no commits. */
-    uncommitted: z
-      .object({
-        count: z.number().int(),
-        additions: z.number().int(),
-        deletions: z.number().int(),
-        /** Untracked files (no diff stat). */
-        untracked: z.number().int(),
-      })
-      .nullable(),
+    /** True when served from the cache. */
+    cached: z.boolean(),
     /** Human-readable failure reason; null when data is usable. */
     error: z.string().nullable(),
   }),
 });
 
 export type GitTreeOutput = z.output<typeof gitTree.output>;
+
+export const gitStatus = defineRpc({
+  name: "gittree.status",
+  input: z.object({
+    directory: z.string().min(1),
+    fresh: z.boolean().optional(),
+  }),
+  output: z.object({
+    /** Index + worktree + untracked vs HEAD. Null when clean or no commits. */
+    uncommitted: uncommittedSchema,
+    submodules: z.array(submoduleSchema),
+    cached: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export type GitStatusOutput = z.output<typeof gitStatus.output>;
+
+type SubFlag = " " | "+" | "-" | "U";
+
+export function parseSubmoduleStatus(text: string): { path: string; hash: string; flag: SubFlag }[] {
+  const out: { path: string; hash: string; flag: SubFlag }[] = [];
+  for (const line of text.split("\n")) {
+    const m = /^([ +\-U])([0-9a-f]+) (.+?)(?: \(.*\))?\r?$/.exec(line);
+    if (m) out.push({ flag: m[1] as SubFlag, hash: m[2], path: m[3] });
+  }
+  return out;
+}
+
+/** Gitlinks (mode 160000) from `ls-files -s` or `ls-tree` output: path -> sha. */
+export function parseGitlinks(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const m = /^160000 (?:commit )?([0-9a-f]+)(?: \d)?\t(.+?)\r?$/.exec(line);
+    if (m) out.set(m[2], m[1]);
+  }
+  return out;
+}
+
+/** Submodule dirtiness from `status --porcelain=v2`: sub field `S<c><m><u>`. */
+export function parsePorcelainV2SubmoduleDirty(text: string): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("1 ") && !line.startsWith("2 ")) continue;
+    const f = line.replace(/\r$/, "").split(" ");
+    const sub = f[2] ?? "";
+    if (!sub.startsWith("S")) continue;
+    // Path follows 8 fields (type 1) or 9 (type 2, with score; "\told" suffix).
+    const p = f.slice(f[0] === "1" ? 8 : 9).join(" ").split("\t")[0];
+    out.set(p, sub[2] === "M" || sub[3] === "U");
+  }
+  return out;
+}
+
 export type GitTreeRow = z.output<typeof rowSchema>;
 
 /** Sentinel hash for the working-tree pseudo-commit. Not a git object. */
@@ -95,7 +169,7 @@ export function isUncommittedHash(hash: string): boolean {
 }
 
 export function uncommittedRow(
-  summary: NonNullable<GitTreeOutput["uncommitted"]>,
+  summary: NonNullable<GitStatusOutput["uncommitted"]>,
 ): GitTreeRow {
   const bits = [
     `${summary.count} file${summary.count === 1 ? "" : "s"}`,

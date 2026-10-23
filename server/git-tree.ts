@@ -1,9 +1,19 @@
 import path from "node:path";
 import type { output as ZodOutput } from "zod";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree";
-import { countUntracked, runGit } from "./git";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree.ts";
+import { createCache } from "./cache.ts";
+import { countUntracked, runGit } from "./git.ts";
+import { dropStatusCache } from "./status.ts";
 
 type Input = ZodOutput<typeof gitTree.input>;
+type Output = ZodOutput<typeof gitTree.output>;
+
+const graphCache = createCache<Output>();
+
+function dropCaches(directory: string): void {
+  graphCache.drop(`${directory}|`);
+  dropStatusCache(`${directory}|`);
+}
 
 function firstLine(text: string): string {
   const nl = text.indexOf("\n");
@@ -26,10 +36,16 @@ async function diffBase(directory: string, hash: string): Promise<string> {
   return EMPTY_TREE;
 }
 
-export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree.output>> {
+export async function getGitTree(input: Input): Promise<Output> {
   const directory = path.resolve(input.directory);
   const limit = input.limit ?? 300;
   const scope = input.scope ?? "current";
+  const key = `${directory}|${scope}|${input.path ?? ""}|${input.preview ?? ""}|${(input.extraRefs ?? []).join(",")}`;
+  // A sync fetches from remotes, so it never serves stale data.
+  if (!input.fresh && !input.sync) {
+    const hit = graphCache.get(key);
+    if (hit) return { ...hit, cached: true };
+  }
 
   try {
     // %x1e record / %x1f field separators: hash, parents, author, date, refs, subject.
@@ -41,13 +57,14 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
         await runGit(directory, ["fetch", "--all", "--prune"], 60_000).catch(() => {});
       }
     }
-    const refs = preview
+    const baseRefs = preview
       ? [assertBranchName(preview)]
       : scope === "current"
         ? ["HEAD"]
         : scope === "local"
           ? ["--branches"]
           : ["--all"];
+    const refs = [...baseRefs, ...(input.extraRefs ?? [])];
     const pathArgs = input.path ? ["--", input.path] : [];
     const [out, remoteOut, currentOut] = await Promise.all([
       runGit(
@@ -134,46 +151,12 @@ export async function getGitTree(input: Input): Promise<ZodOutput<typeof gitTree
       // Branch listing is best-effort; the graph is the main content.
     }
 
-    // Uncommitted changes (index + worktree vs HEAD) plus untracked files.
-    // Best-effort: null when clean or the repo has no commits yet.
-    let uncommitted: ZodOutput<typeof gitTree.output>["uncommitted"] = null;
-    try {
-      const [numstat, statusOut] = await Promise.all([
-        runGit(directory, ["diff", "HEAD", "--numstat"]).catch(() => ""),
-        runGit(directory, ["status", "--porcelain"]).catch(() => ""),
-      ]);
-      let additions = 0;
-      let deletions = 0;
-      let tracked = 0;
-      for (const line of numstat.split("\n")) {
-        if (!line.trim()) continue;
-        const [a = "0", d = "0"] = line.split("\t");
-        tracked++;
-        additions += a === "-" ? 0 : Number.parseInt(a, 10) || 0;
-        deletions += d === "-" ? 0 : Number.parseInt(d, 10) || 0;
-      }
-      let untracked = 0;
-      const untrackedPaths: string[] = [];
-      for (const line of statusOut.split("\n")) {
-        if (line.startsWith("??")) {
-          untracked++;
-          untrackedPaths.push(unquotePorcelainPath(line.slice(3)));
-        }
-      }
-      // Untracked files contribute their full line count as additions —
-      // `git diff HEAD` never sees them.
-      for (const c of (await countUntracked(directory, untrackedPaths)).values()) additions += c.additions;
-      if (tracked > 0 || untracked > 0) {
-        uncommitted = { count: tracked + untracked, additions, deletions, untracked };
-      }
-    } catch {
-      // Uncommitted summary is best-effort.
-    }
-
-    return { rows, heads, remotes, uncommitted, error: null };
+    const result: Output = { rows, heads, remotes, cached: false, error: null };
+    graphCache.set(key, result);
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { rows: [], heads: [], remotes: [], uncommitted: null, error: message };
+    return { rows: [], heads: [], remotes: [], cached: false, error: message };
   }
 }
 
@@ -546,6 +529,7 @@ export async function runBranchOp(
         break;
       }
     }
+    dropCaches(directory);
     return { error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -599,6 +583,7 @@ export async function runCommitOp(
         break;
       }
     }
+    dropCaches(directory);
     return { error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
