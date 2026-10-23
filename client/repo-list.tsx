@@ -76,7 +76,7 @@ function FolderLine({
         >
           <Text style={{ color: c.foreground, fontSize: 11 }}>Start</Text>
         </Pressable>
-        ) : null}
+      ) : null}
     </View>
   );
 }
