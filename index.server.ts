@@ -8,6 +8,7 @@ import {
   runBranchOp,
   runCommitOp,
 } from "./server/git-tree";
+import { getFolderStatus, getProbe, getRepos } from "./server/repos";
 import { getStatus } from "./server/status";
 import {
   commitCompare,
@@ -16,6 +17,9 @@ import {
   commitDiff,
   gitBranchOp,
   gitCommitOp,
+  gitFolderStatus,
+  gitProbe,
+  gitRepos,
   gitStatus,
   gitTree,
 } from "./shared/git-tree";
@@ -29,5 +33,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(commitCompareDiff, getCommitCompareDiff);
   server.handle(gitBranchOp, runBranchOp);
   server.handle(gitCommitOp, runCommitOp);
+  server.handle(gitProbe, getProbe);
+  server.handle(gitRepos, getRepos);
+  server.handle(gitFolderStatus, getFolderStatus);
   return () => {};
 }

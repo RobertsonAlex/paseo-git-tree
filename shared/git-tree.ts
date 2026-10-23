@@ -720,3 +720,84 @@ export function paintGraph(rows: GitTreeRow[], remotes: string[]): GitTreeRow[] 
     };
   });
 }
+
+export const repoCardSchema = z.object({
+  name: z.string(),
+  root: z.string(),
+  folders: z.array(z.object({ path: z.string(), name: z.string(), isMain: z.boolean() })),
+});
+export type RepoCard = z.output<typeof repoCardSchema>;
+
+export const gitProbe = defineRpc({
+  name: "gittree.probe",
+  input: z.object({ directory: z.string().min(1) }),
+  output: z.object({ kind: z.enum(["repo", "folder"]), root: z.string().nullable() }),
+});
+
+export const gitRepos = defineRpc({
+  name: "gittree.repos",
+  input: z.object({ directory: z.string().min(1), fresh: z.boolean().optional() }),
+  output: z.object({
+    repos: z.array(repoCardSchema),
+    cached: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const gitFolderStatus = defineRpc({
+  name: "gittree.folder-status",
+  input: z.object({ directories: z.array(z.string()).max(200) }),
+  output: z.object({
+    statuses: z.array(
+      z.object({
+        path: z.string(),
+        branch: z.string().nullable(),
+        changed: z.number().int(),
+        submodulesOk: z.boolean().nullable(),
+        error: z.string().nullable(),
+      }),
+    ),
+  }),
+});
+
+/** `git worktree list --porcelain`. */
+export function parseWorktreeList(
+  text: string,
+): { path: string; branch: string | null; bare: boolean; prunable: boolean }[] {
+  const out: { path: string; branch: string | null; bare: boolean; prunable: boolean }[] = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    let cur: (typeof out)[number] | null = null;
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("worktree ")) cur = { path: line.slice(9), branch: null, bare: false, prunable: false };
+      else if (!cur) continue;
+      else if (line.startsWith("branch ")) cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
+      else if (line === "bare") cur.bare = true;
+      else if (line === "prunable" || line.startsWith("prunable ")) cur.prunable = true;
+    }
+    if (cur) out.push(cur);
+  }
+  return out;
+}
+
+const normPath = (p: string) => p.toLowerCase().replace(/\\/g, "/").replace(/\/+$/, "");
+const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
+
+/** Group found repos into cards keyed by their main worktree; linked worktrees merge in. */
+export function groupRepos(found: { path: string; worktrees: ReturnType<typeof parseWorktreeList> }[]): RepoCard[] {
+  const cards = new Map<string, RepoCard>();
+  for (const f of found) {
+    const live = f.worktrees.filter((w) => !w.bare && !w.prunable);
+    const main = f.worktrees.find((w) => !w.bare)?.path ?? f.path;
+    const key = normPath(main);
+    if (cards.has(key)) continue;
+    const paths = live.some((w) => normPath(w.path) === key) ? live.map((w) => w.path) : [main, ...live.map((w) => w.path)];
+    cards.set(key, {
+      name: baseName(main),
+      root: main,
+      folders: paths
+        .map((p) => ({ path: p, name: baseName(p), isMain: normPath(p) === key }))
+        .sort((a, b) => Number(b.isMain) - Number(a.isMain) || a.name.localeCompare(b.name)),
+    });
+  }
+  return [...cards.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+}

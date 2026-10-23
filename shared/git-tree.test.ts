@@ -565,3 +565,43 @@ test("parsePorcelainV2SubmoduleDirty flags S.M. and S..U, not SC..", () => {
     ["moved", false],
   ]);
 });
+
+import { groupRepos, parseWorktreeList } from "./git-tree.ts";
+
+test("parseWorktreeList reads main, linked, detached, bare and prunable entries", () => {
+  const text = [
+    "worktree C:/Dev/app", "HEAD aaa", "branch refs/heads/main", "",
+    "worktree C:/Dev/wt", "HEAD bbb", "detached", "",
+    "worktree C:/Dev/bare.git", "bare", "",
+    "worktree C:/Dev/gone", "HEAD ccc", "branch refs/heads/old", "prunable gitdir file points to non-existent location", "",
+  ].join("\n");
+  assert.deepEqual(parseWorktreeList(text), [
+    { path: "C:/Dev/app", branch: "main", bare: false, prunable: false },
+    { path: "C:/Dev/wt", branch: null, bare: false, prunable: false },
+    { path: "C:/Dev/bare.git", branch: null, bare: true, prunable: false },
+    { path: "C:/Dev/gone", branch: "old", bare: false, prunable: true },
+  ]);
+});
+
+test("groupRepos merges a worktree found by the walk into its main card", () => {
+  const wts = parseWorktreeList("worktree C:/Dev/app\nHEAD a\nbranch refs/heads/main\n\nworktree C:/Dev/wt\nHEAD b\ndetached\n");
+  const cards = groupRepos([
+    { path: "C:/Dev/app", worktrees: wts },
+    { path: "C:/Dev/wt", worktrees: wts },
+    { path: "C:/Dev/Zed", worktrees: [] },
+  ]);
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].name, "app");
+  assert.deepEqual(cards[0].folders, [
+    { path: "C:/Dev/app", name: "app", isMain: true },
+    { path: "C:/Dev/wt", name: "wt", isMain: false },
+  ]);
+  assert.equal(cards[1].name, "Zed");
+});
+
+test("groupRepos keys case-insensitively on Windows-style paths", () => {
+  const a = parseWorktreeList("worktree C:\\Dev\\App\nHEAD a\nbranch refs/heads/main\n");
+  const b = parseWorktreeList("worktree c:/dev/app/\nHEAD a\nbranch refs/heads/main\n");
+  const cards = groupRepos([{ path: "C:\\Dev\\App", worktrees: a }, { path: "c:/dev/app/", worktrees: b }]);
+  assert.equal(cards.length, 1);
+});
