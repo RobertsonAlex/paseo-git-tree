@@ -97,6 +97,8 @@ export const gitTree = defineRpc({
     ),
     /** Remote names (`git remote`), used to pair `origin/foo` with local `foo`. */
     remotes: z.array(z.string()),
+    /** extraRefs that aren't commits in this repo (unfetched/unpushed); left out of the log. */
+    missingRefs: z.array(z.string()).default([]),
     /** True when served from the cache. */
     cached: z.boolean(),
     /** Human-readable failure reason; null when data is usable. */

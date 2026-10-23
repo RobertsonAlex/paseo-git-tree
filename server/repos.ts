@@ -3,6 +3,7 @@ import path from "node:path";
 import type { output as ZodOutput } from "zod";
 import {
   groupRepos,
+  parsePorcelainV2SubmoduleDirty,
   parseSubmoduleStatus,
   parseWorktreeList,
   type RepoCard,
@@ -86,14 +87,19 @@ type Status = ZodOutput<typeof gitFolderStatus.output>["statuses"][number];
 
 async function folderStatus(dir: string): Promise<Status> {
   try {
-    const head = (await runGit(dir, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-    const changed = (await runGit(dir, ["status", "--porcelain"])).split("\n").filter((l) => l.trim()).length;
+    // No commits yet: rev-parse fails, but HEAD still names the unborn branch.
+    const head = (
+      await runGit(dir, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => runGit(dir, ["symbolic-ref", "--short", "HEAD"]))
+    ).trim();
+    const statusOut = await runGit(dir, ["status", "--porcelain=v2"]);
+    const changed = statusOut.split("\n").filter((l) => /^[12u?] /.test(l)).length;
     const subs = parseSubmoduleStatus(await runGit(dir, ["submodule", "status"]).catch(() => ""));
+    const dirty = [...parsePorcelainV2SubmoduleDirty(statusOut).values()].some(Boolean);
     return {
       path: dir,
       branch: head === "HEAD" ? null : head,
       changed,
-      submodulesOk: subs.length ? !subs.some((s) => s.flag === "+" || s.flag === "U") : null,
+      submodulesOk: subs.length ? !dirty && !subs.some((s) => s.flag === "+" || s.flag === "U") : null,
       error: null,
     };
   } catch (e) {

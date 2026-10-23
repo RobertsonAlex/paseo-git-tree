@@ -103,3 +103,25 @@ test("open-workspace reports a failure as an error", async () => {
   assert.equal(res.workspaceId, null);
   assert.match(res.error ?? "", /nope/);
 });
+
+test("folder-status marks a dirty (but not moved) submodule as not ok", async () => {
+  const child = await makeTempRepo();
+  const parent = await makeTempRepo();
+  await git(parent, "-c", "protocol.file.allow=always", "submodule", "add", child, "sub");
+  await git(parent, "commit", "-m", "sub");
+  const clean = (await getFolderStatus({ directories: [parent] })).statuses[0];
+  assert.equal(clean.submodulesOk, true);
+  assert.equal(clean.changed, 0);
+  await writeFile(path.join(parent, "sub", "README.md"), "edited\n");
+  const dirty = (await getFolderStatus({ directories: [parent] })).statuses[0];
+  assert.equal(dirty.submodulesOk, false);
+  assert.equal(dirty.changed, 1);
+});
+
+test("folder-status reports the branch of a repo with no commits", async () => {
+  const dir = await scratch();
+  await initRepo(dir);
+  const s = (await getFolderStatus({ directories: [dir] })).statuses[0];
+  assert.equal(s.error, null);
+  assert.equal(s.branch, "main");
+});

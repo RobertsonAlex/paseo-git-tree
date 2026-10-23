@@ -64,7 +64,13 @@ export async function getGitTree(input: Input): Promise<Output> {
         : scope === "local"
           ? ["--branches"]
           : ["--all"];
-    const refs = [...baseRefs, ...(input.extraRefs ?? [])];
+    // A submodule pointer may name a commit this clone never fetched; `git log` would exit 128.
+    const extra = input.extraRefs ?? [];
+    const present = await Promise.all(
+      extra.map((h) => runGit(directory, ["cat-file", "-e", `${h}^{commit}`]).then(() => true, () => false)),
+    );
+    const missingRefs = extra.filter((_, i) => !present[i]);
+    const refs = [...baseRefs, ...extra.filter((_, i) => present[i])];
     const pathArgs = input.path ? ["--", input.path] : [];
     const [out, remoteOut, currentOut] = await Promise.all([
       runGit(
@@ -151,12 +157,12 @@ export async function getGitTree(input: Input): Promise<Output> {
       // Branch listing is best-effort; the graph is the main content.
     }
 
-    const result: Output = { rows, heads, remotes, cached: false, error: null };
+    const result: Output = { rows, heads, remotes, missingRefs, cached: false, error: null };
     graphCache.set(key, result);
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { rows: [], heads: [], remotes: [], cached: false, error: message };
+    return { rows: [], heads: [], remotes: [], missingRefs: [], cached: false, error: message };
   }
 }
 
@@ -529,11 +535,13 @@ export async function runBranchOp(
         break;
       }
     }
-    dropCaches(directory);
     return { error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: firstLine(message) || message };
+  } finally {
+    // A conflicted merge/rebase/pull still changes the worktree.
+    dropCaches(directory);
   }
 }
 
@@ -583,10 +591,12 @@ export async function runCommitOp(
         break;
       }
     }
-    dropCaches(directory);
     return { error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: firstLine(message) || message };
+  } finally {
+    // A conflicted merge/rebase/pull still changes the worktree.
+    dropCaches(directory);
   }
 }

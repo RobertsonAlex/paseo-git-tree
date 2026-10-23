@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { getGitTree } from "./git-tree.ts";
+import { getGitTree, runCommitOp } from "./git-tree.ts";
 import { getStatus } from "./status.ts";
 import { git, makeTempRepo } from "./test-helpers.ts";
 
@@ -107,4 +107,36 @@ test("getGitTree cache distinguishes limit", async () => {
   const two = await getGitTree({ directory: dir, limit: 2, scope: "current" });
   assert.equal(one.rows.length, 1);
   assert.equal(two.rows.length, 2);
+});
+
+test("extraRefs missing from the object store are dropped and reported, not an error", async () => {
+  const child = await makeTempRepo();
+  await git(child, "checkout", "-b", "side");
+  await writeFile(path.join(child, "s.txt"), "s\n");
+  await git(child, "add", "s.txt");
+  await git(child, "commit", "-m", "side commit");
+  const x = await trim(git(child, "rev-parse", "HEAD"));
+  await git(child, "checkout", "main");
+  const random = "0123456789abcdef0123456789abcdef01234567";
+  const res = await getGitTree({ directory: child, limit: 50, scope: "current", fresh: true, extraRefs: [random, x] });
+  assert.equal(res.error, null);
+  assert.ok(res.rows.some((r) => r.hash === x));
+  assert.deepEqual(res.missingRefs, [random]);
+  const plain = await getGitTree({ directory: child, limit: 50, scope: "current", fresh: true });
+  assert.deepEqual(plain.missingRefs, []);
+});
+
+test("a failed commit op still drops the graph cache", async () => {
+  const dir = await makeTempRepo();
+  await git(dir, "checkout", "-b", "side");
+  await writeFile(path.join(dir, "README.md"), "side\n");
+  await git(dir, "commit", "-am", "side");
+  const side = await trim(git(dir, "rev-parse", "HEAD"));
+  await git(dir, "checkout", "main");
+  await writeFile(path.join(dir, "README.md"), "main\n");
+  await git(dir, "commit", "-am", "main");
+  await getGitTree({ directory: dir, limit: 50, scope: "current" });
+  const op = await runCommitOp({ directory: dir, op: "merge", hash: side });
+  assert.ok(op.error);
+  assert.equal((await getGitTree({ directory: dir, limit: 50, scope: "current" })).cached, false);
 });
