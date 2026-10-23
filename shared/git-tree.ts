@@ -760,6 +760,12 @@ export const gitFolderStatus = defineRpc({
   }),
 });
 
+export const gitOpenWorkspace = defineRpc({
+  name: "gittree.open-workspace",
+  input: z.object({ directory: z.string().min(1) }),
+  output: z.object({ workspaceId: z.string().nullable(), error: z.string().nullable() }),
+});
+
 /** `git worktree list --porcelain`. */
 export function parseWorktreeList(
   text: string,

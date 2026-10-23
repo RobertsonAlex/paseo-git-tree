@@ -7,6 +7,7 @@ import {
   parseWorktreeList,
   type RepoCard,
   type gitFolderStatus,
+  type gitOpenWorkspace,
   type gitProbe,
   type gitRepos,
 } from "../shared/git-tree.ts";
@@ -114,4 +115,18 @@ export async function getFolderStatus(
     }),
   );
   return { statuses };
+}
+
+/** Opens (or creates) the Paseo workspace for a folder. Git hands back `C:/...`
+ *  paths; resolve to native separators so Paseo matches an existing workspace. */
+export async function openWorkspace(
+  input: ZodOutput<typeof gitOpenWorkspace.input>,
+  context: { paseo: { workspaces: { open(input: { cwd: string }): Promise<{ id: string }> } } },
+): Promise<ZodOutput<typeof gitOpenWorkspace.output>> {
+  try {
+    const handle = await context.paseo.workspaces.open({ cwd: path.resolve(input.directory) });
+    return { workspaceId: handle.id, error: null };
+  } catch (e) {
+    return { workspaceId: null, error: `Couldn't open workspace: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }

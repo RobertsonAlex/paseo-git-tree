@@ -8,7 +8,7 @@ import {
   runBranchOp,
   runCommitOp,
 } from "./server/git-tree";
-import { getFolderStatus, getProbe, getRepos } from "./server/repos";
+import { getFolderStatus, getProbe, getRepos, openWorkspace } from "./server/repos";
 import { getStatus } from "./server/status";
 import {
   commitCompare,
@@ -18,6 +18,7 @@ import {
   gitBranchOp,
   gitCommitOp,
   gitFolderStatus,
+  gitOpenWorkspace,
   gitProbe,
   gitRepos,
   gitStatus,
@@ -36,5 +37,6 @@ export default function contribute(server: PluginServerContext) {
   server.handle(gitProbe, getProbe);
   server.handle(gitRepos, getRepos);
   server.handle(gitFolderStatus, getFolderStatus);
+  server.handle(gitOpenWorkspace, openWorkspace);
   return () => {};
 }

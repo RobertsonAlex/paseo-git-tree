@@ -11,6 +11,8 @@ import {
   computeGraph,
   gitBranchOp,
   gitCommitOp,
+  gitOpenWorkspace,
+  gitProbe,
   gitStatus,
   gitTree,
   graphColor,
@@ -36,6 +38,7 @@ import {
   parseBranchRef,
   splitRemoteRef,
 } from "../shared/git-tree";
+import { RepoList } from "./repo-list";
 import { SubmoduleStrip } from "./submodule-strip";
 
 // --- Geometry ---------------------------------------------------------------
@@ -2804,13 +2807,30 @@ function entryLabel(e: ViewEntry): string {
   return e.kind === "repo" ? e.label : e.directory.split(/[\\/]/).filter(Boolean).pop() ?? e.directory;
 }
 
-export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
+export function GitTreePanel({ theme, layout, workspaceId, navigation }: PluginWorkspacePanelProps) {
   const workspace = useWorkspace(workspaceId, (w) => ({
     directory: w.directory,
     name: w.name,
     projectKind: w.projectKind,
   }));
   const [drill, setDrill] = useState<ViewEntry[]>([]);
+  const probe = useRpc(gitProbe);
+  const openWorkspace = useRpc(gitOpenWorkspace);
+  const toast = useToast();
+  const directory = workspace?.directory;
+  /** Whether the workspace directory is inside a git work tree, per directory. */
+  const [probed, setProbed] = useState<{ directory: string; kind: "repo" | "folder" } | null>(null);
+  useEffect(() => {
+    if (!directory) return;
+    let live = true;
+    probe({ directory })
+      .then((r) => live && setProbed({ directory, kind: r.kind }))
+      // Probe failure falls back to the graph, which shows its own error.
+      .catch(() => live && setProbed({ directory, kind: "repo" }));
+    return () => {
+      live = false;
+    };
+  }, [directory, probe]);
   if (!workspace) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
@@ -2822,9 +2842,23 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       </View>
     );
   }
-  const root: ViewEntry = { kind: "repo", directory: workspace.directory, label: workspace.name };
-  // A different workspace directory starts a new stack.
-  const stack = drill[0]?.directory === workspace.directory ? drill : [root];
+  // Git workspaces open straight to the graph without waiting for the probe;
+  // anything else waits for it, so a folder never flashes a git error.
+  const kind = probed?.directory === workspace.directory ? probed.kind : workspace.projectKind === "git" ? "repo" : null;
+  if (!kind) {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.colors.surface0, alignItems: "center", justifyContent: "center", gap: 8 }}>
+        <Icon name="LoaderCircle" size={18} color={theme.colors.foregroundMuted} />
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>Loading…</Text>
+      </View>
+    );
+  }
+  const root: ViewEntry =
+    kind === "repo"
+      ? { kind: "repo", directory: workspace.directory, label: workspace.name }
+      : { kind: "folder", directory: workspace.directory };
+  // A different workspace directory (or a probe that changed its kind) starts a new stack.
+  const stack = drill[0]?.directory === workspace.directory && drill[0].kind === root.kind ? drill : [root];
   const top = stack[stack.length - 1]!;
 
   const back = () => {
@@ -2854,11 +2888,30 @@ export function GitTreePanel({ theme, layout, workspaceId }: PluginWorkspacePane
       </View>
     ) : null;
 
+  const navOpen = navigation?.openWorkspace;
+  const startWorkspace = navOpen
+    ? (path: string) => {
+        openWorkspace({ directory: path })
+          .then((r) => {
+            if (r.workspaceId) navOpen({ workspaceId: r.workspaceId });
+            else toast.error(r.error ?? "Couldn't open workspace");
+          })
+          .catch(() => toast.error("Couldn't open workspace"));
+      }
+    : undefined;
+
   if (top.kind === "folder") {
-    // Task 6 renders the folder view.
     return (
       <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
         {header}
+        <RepoList
+          key={top.directory}
+          directory={top.directory}
+          theme={theme}
+          layout={layout}
+          onDrill={(f) => setDrill([...stack, { kind: "repo", directory: f.path, label: f.name }])}
+          onStartWorkspace={startWorkspace}
+        />
       </View>
     );
   }

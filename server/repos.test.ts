@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { findRepos, getFolderStatus, getProbe, getRepos } from "./repos.ts";
+import { findRepos, getFolderStatus, getProbe, getRepos, openWorkspace } from "./repos.ts";
 import { git, makeTempRepo } from "./test-helpers.ts";
 
 const scratch = () => mkdtemp(path.join(tmpdir(), "git-tree-walk-"));
@@ -85,4 +85,21 @@ test("folder-status reports branch, changed count and submodulesOk", async () =>
   assert.equal(statuses[1].changed, 1);
   assert.equal(statuses[1].submodulesOk, null);
   assert.ok(statuses[2].error);
+});
+
+test("open-workspace passes a native-separator cwd and returns the handle id", async () => {
+  const seen: string[] = [];
+  const paseo = { workspaces: { open: async (i: { cwd: string }) => (seen.push(i.cwd), { id: "ws-1" }) } };
+  const native = path.join(tmpdir(), "a", "b");
+  const res = await openWorkspace({ directory: native.replaceAll("\\", "/") }, { paseo });
+  assert.deepEqual(res, { workspaceId: "ws-1", error: null });
+  assert.equal(seen[0], native);
+  if (process.platform === "win32") assert.ok(!seen[0].includes("/"));
+});
+
+test("open-workspace reports a failure as an error", async () => {
+  const paseo = { workspaces: { open: async () => Promise.reject(new Error("nope")) } };
+  const res = await openWorkspace({ directory: tmpdir() }, { paseo });
+  assert.equal(res.workspaceId, null);
+  assert.match(res.error ?? "", /nope/);
 });
