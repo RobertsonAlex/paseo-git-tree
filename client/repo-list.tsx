@@ -30,37 +30,42 @@ function FolderLine({
     : status.error
       ? "unavailable"
       : `${status.branch ?? "detached"} · ${status.changed} changed`;
+  // Start sits beside the drill target, not inside it, so a press never does both.
   return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onDrill}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
+    <View
       style={{
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 5,
+        paddingRight: 8,
         borderRadius: 6,
         backgroundColor: hovered ? c.surface1 : "transparent",
       }}
     >
-      <Icon name={folder.isMain ? "Folder" : "GitBranch"} size={12} color={c.foregroundMuted} />
-      <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 12, flexShrink: 1 }}>
-        {folder.name}
-      </Text>
-      <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11, flexShrink: 1 }}>
-        {summary}
-      </Text>
-      {status?.submodulesOk === false ? (
-        <View style={{ borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: c.statusWarning }}>
-          <Text numberOfLines={1} style={{ fontSize: 10, color: c.statusWarning }}>
-            submodules out of step
-          </Text>
-        </View>
-      ) : null}
-      <View style={{ flex: 1 }} />
+      <Pressable
+        accessibilityRole="button"
+        onPress={onDrill}
+        onHoverIn={() => setHovered(true)}
+        onHoverOut={() => setHovered(false)}
+        style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6, paddingLeft: 8, paddingVertical: 5 }}
+      >
+        <Icon name={folder.isMain ? "Folder" : "GitBranch"} size={12} color={c.foregroundMuted} />
+        <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 12, flexShrink: 1 }}>
+          {folder.name}
+        </Text>
+        <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11, flexShrink: 1 }}>
+          {summary}
+        </Text>
+        {status?.submodulesOk === false ? (
+          <View style={{ borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, borderWidth: 1, borderColor: c.statusWarning }}>
+            <Text numberOfLines={1} style={{ fontSize: 10, color: c.statusWarning }}>
+              submodules out of step
+            </Text>
+          </View>
+        ) : null}
+        <View style={{ flex: 1 }} />
+        <Icon name="ChevronRight" size={12} color={c.foregroundMuted} />
+      </Pressable>
       {onStart ? (
         <Pressable
           accessibilityRole="button"
@@ -71,9 +76,8 @@ function FolderLine({
         >
           <Text style={{ color: c.foreground, fontSize: 11 }}>Start</Text>
         </Pressable>
-      ) : null}
-      <Icon name="ChevronRight" size={12} color={c.foregroundMuted} />
-    </Pressable>
+        ) : null}
+    </View>
   );
 }
 
@@ -109,12 +113,15 @@ export function RepoList({
       const paths = cards.flatMap((r) => r.folders.map((f) => f.path)).filter((p) => !requested.current.has(p));
       for (const p of paths) requested.current.add(p);
       for (let i = 0; i < paths.length; i += STATUS_BATCH) {
-        const res = await getFolderStatus({ directories: paths.slice(i, i + STATUS_BATCH) }).catch(() => null);
+        const slice = paths.slice(i, i + STATUS_BATCH);
+        const res = await getFolderStatus({ directories: slice }).catch(() => null);
         if (id !== loadGen.current) return;
-        if (!res) continue;
+        // A failed batch shows as unavailable and is retried on the next load.
+        if (!res) for (const p of slice) requested.current.delete(p);
+        const statuses = res?.statuses ?? slice.map((path) => ({ path, branch: null, changed: 0, submodulesOk: null, error: "unavailable" }));
         setStatuses((cur) => {
           const next = { ...cur };
-          for (const s of res.statuses) next[s.path] = s;
+          for (const s of statuses) next[s.path] = s;
           return next;
         });
       }
