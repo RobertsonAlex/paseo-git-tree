@@ -3256,7 +3256,9 @@ export function RepoView({
             previewHold.current = null;
             setPreviewRef(null);
           }
-          loadTree({ sync: true, fresh: true, ...(clearPreview ? { preview: null } : {}) });
+          // Only remote ops sync; a local op must not trigger a network fetch.
+          const sync = op === "pull" || op === "push" || op === "fetch";
+          loadTree({ sync, fresh: true, ...(clearPreview ? { preview: null } : {}) });
           setBranchMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
@@ -3332,7 +3334,7 @@ export function RepoView({
             previewHold.current = null;
             setPreviewRef(null);
           }
-          loadTree({ sync: true, fresh: true, ...(clearPreview ? { preview: null } : {}) });
+          loadTree({ fresh: true, ...(clearPreview ? { preview: null } : {}) });
           setMenu(null);
         })
         .catch(() => toast.error("Git operation failed"))
