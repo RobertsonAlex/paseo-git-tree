@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { output as ZodOutput } from "zod";
+import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import {
   parseGitlinks,
   parsePorcelainV2SubmoduleDirty,
@@ -11,7 +11,7 @@ import {
 import { createCache } from "./cache.ts";
 import { countUntracked, runGit } from "./git.ts";
 
-type Input = ZodOutput<typeof gitStatus.input>;
+type Input = RpcInput<typeof gitStatus>;
 
 const cache = createCache<GitStatusOutput>();
 

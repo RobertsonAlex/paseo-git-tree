@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { output as ZodOutput } from "zod";
+import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import {
   groupRepos,
   parsePorcelainV2SubmoduleDirty,
@@ -52,7 +52,7 @@ export async function findRepos(
   return found;
 }
 
-export async function getProbe(input: ZodOutput<typeof gitProbe.input>): Promise<ZodOutput<typeof gitProbe.output>> {
+export async function getProbe(input: RpcInput<typeof gitProbe>): Promise<RpcOutput<typeof gitProbe>> {
   try {
     const root = (await runGit(input.directory, ["rev-parse", "--show-toplevel"])).trim();
     return { kind: "repo", root };
@@ -63,7 +63,7 @@ export async function getProbe(input: ZodOutput<typeof gitProbe.input>): Promise
 
 const cache = createCache<RepoCard[]>();
 
-export async function getRepos(input: ZodOutput<typeof gitRepos.input>): Promise<ZodOutput<typeof gitRepos.output>> {
+export async function getRepos(input: RpcInput<typeof gitRepos>): Promise<RpcOutput<typeof gitRepos>> {
   const key = `${input.directory}|repos`;
   const hit = input.fresh ? undefined : cache.get(key);
   if (hit) return { repos: hit, cached: true, error: null };
@@ -83,7 +83,7 @@ export async function getRepos(input: ZodOutput<typeof gitRepos.input>): Promise
   }
 }
 
-type Status = ZodOutput<typeof gitFolderStatus.output>["statuses"][number];
+type Status = RpcOutput<typeof gitFolderStatus>["statuses"][number];
 
 async function folderStatus(dir: string): Promise<Status> {
   try {
@@ -108,8 +108,8 @@ async function folderStatus(dir: string): Promise<Status> {
 }
 
 export async function getFolderStatus(
-  input: ZodOutput<typeof gitFolderStatus.input>,
-): Promise<ZodOutput<typeof gitFolderStatus.output>> {
+  input: RpcInput<typeof gitFolderStatus>,
+): Promise<RpcOutput<typeof gitFolderStatus>> {
   const statuses: Status[] = new Array(input.directories.length);
   let next = 0;
   await Promise.all(
@@ -126,9 +126,9 @@ export async function getFolderStatus(
 /** Opens (or creates) the Paseo workspace for a folder. Git hands back `C:/...`
  *  paths; resolve to native separators so Paseo matches an existing workspace. */
 export async function openWorkspace(
-  input: ZodOutput<typeof gitOpenWorkspace.input>,
+  input: RpcInput<typeof gitOpenWorkspace>,
   context: { paseo: { workspaces: { open(input: { cwd: string }): Promise<{ id: string }> } } },
-): Promise<ZodOutput<typeof gitOpenWorkspace.output>> {
+): Promise<RpcOutput<typeof gitOpenWorkspace>> {
   try {
     const handle = await context.paseo.workspaces.open({ cwd: path.resolve(input.directory) });
     return { workspaceId: handle.id, error: null };

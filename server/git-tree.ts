@@ -1,12 +1,12 @@
 import path from "node:path";
-import type { output as ZodOutput } from "zod";
+import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree.ts";
 import { createCache } from "./cache.ts";
 import { countUntracked, runGit } from "./git.ts";
 import { dropStatusCache } from "./status.ts";
 
-type Input = ZodOutput<typeof gitTree.input>;
-type Output = ZodOutput<typeof gitTree.output>;
+type Input = RpcInput<typeof gitTree>;
+type Output = RpcOutput<typeof gitTree>;
 
 const graphCache = createCache<Output>();
 
@@ -115,7 +115,7 @@ export async function getGitTree(input: Input): Promise<Output> {
 
     const rows = computeGraph(commits, remotes);
 
-    let heads: ZodOutput<typeof gitTree.output>["heads"] = [];
+    let heads: RpcOutput<typeof gitTree>["heads"] = [];
     try {
       const [branchOut, remoteRefOut, currentOut] = await Promise.all([
         runGit(directory, [
@@ -273,8 +273,8 @@ async function worktreePatch(directory: string, filePath: string): Promise<strin
 }
 
 export async function getCommitDetail(
-  input: ZodOutput<typeof commitDetail.input>,
-): Promise<ZodOutput<typeof commitDetail.output>> {
+  input: RpcInput<typeof commitDetail>,
+): Promise<RpcOutput<typeof commitDetail>> {
   const directory = path.resolve(input.directory);
   const { hash } = input;
   if (isUncommittedHash(hash)) {
@@ -350,8 +350,8 @@ export async function getCommitDetail(
 }
 
 export async function getCommitDiff(
-  input: ZodOutput<typeof commitDiff.input>,
-): Promise<ZodOutput<typeof commitDiff.output>> {
+  input: RpcInput<typeof commitDiff>,
+): Promise<RpcOutput<typeof commitDiff>> {
   const directory = path.resolve(input.directory);
   try {
     if (isUncommittedHash(input.hash)) {
@@ -390,8 +390,8 @@ async function currentBranchName(directory: string): Promise<string> {
 }
 
 export async function getCommitCompare(
-  input: ZodOutput<typeof commitCompare.input>,
-): Promise<ZodOutput<typeof commitCompare.output>> {
+  input: RpcInput<typeof commitCompare>,
+): Promise<RpcOutput<typeof commitCompare>> {
   const directory = path.resolve(input.directory);
   try {
     const files = await diffFiles(directory, input.base, input.head);
@@ -403,8 +403,8 @@ export async function getCommitCompare(
 }
 
 export async function getCommitCompareDiff(
-  input: ZodOutput<typeof commitCompareDiff.input>,
-): Promise<ZodOutput<typeof commitCompareDiff.output>> {
+  input: RpcInput<typeof commitCompareDiff>,
+): Promise<RpcOutput<typeof commitCompareDiff>> {
   const directory = path.resolve(input.directory);
   try {
     const patch = await runGit(
@@ -442,8 +442,8 @@ async function localBranchExists(directory: string, name: string): Promise<boole
 }
 
 export async function runBranchOp(
-  input: ZodOutput<typeof gitBranchOp.input>,
-): Promise<ZodOutput<typeof gitBranchOp.output>> {
+  input: RpcInput<typeof gitBranchOp>,
+): Promise<RpcOutput<typeof gitBranchOp>> {
   const directory = path.resolve(input.directory);
   try {
     const remotes = await listRemotes(directory);
@@ -553,8 +553,8 @@ function assertCommitHash(hash: string): string {
 }
 
 export async function runCommitOp(
-  input: ZodOutput<typeof gitCommitOp.input>,
-): Promise<ZodOutput<typeof gitCommitOp.output>> {
+  input: RpcInput<typeof gitCommitOp>,
+): Promise<RpcOutput<typeof gitCommitOp>> {
   const directory = path.resolve(input.directory);
   try {
     const hash = assertCommitHash(input.hash);

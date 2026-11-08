@@ -6,7 +6,6 @@ export default function contribute(client: PluginClientContext) {
     id: "git-tree",
     title: "Git Tree",
     icon: "GitBranch",
-    context: "workspace",
     locations: ["workspace", "explorer"],
     Component: GitTreePanel,
   });

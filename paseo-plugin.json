@@ -1,6 +1,6 @@
 {
   "id": "git-tree",
   "requirements": {
-    "paseo": ">=0.8.0"
+    "paseo": ">=0.14.0"
   }
 }
