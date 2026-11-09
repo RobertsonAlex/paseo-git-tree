@@ -93,6 +93,8 @@ export const gitTree = defineRpc({
         isCurrent: z.boolean(),
         /** True for `origin/foo`-style refs from `refs/remotes`. */
         remote: z.boolean().default(false),
+        /** Other worktree this local branch is checked out in; null for none or this one. */
+        worktreePath: z.string().nullable().default(null),
       }),
     ),
     /** Remote names (`git remote`), used to pair `origin/foo` with local `foo`. */
@@ -313,8 +315,25 @@ export const gitBranchOp = defineRpc({
   }),
   output: z.object({
     error: z.string().nullable(),
+    /** Checkout target is checked out in this other worktree; git was not run. */
+    checkedOutAt: z.string().nullable().default(null),
   }),
 });
+
+/** `git for-each-ref` format read by parseLocalHeads (`%(worktreepath)` needs Git 2.24+). */
+export const LOCAL_HEAD_FORMAT = "%(refname:short)%09%(objectname)%09%(HEAD)%09%(worktreepath)";
+
+/** Local branches from LOCAL_HEAD_FORMAT output; `current` is `rev-parse --abbrev-ref HEAD`. */
+export function parseLocalHeads(text: string, current: string) {
+  return text
+    .split(/\r?\n/)
+    .filter((l) => l.trim() !== "")
+    .map((line) => {
+      const [name = "", hash = "", headFlag = "", worktree = ""] = line.split("\t");
+      const isCurrent = headFlag.trim() === "*" || name === current;
+      return { name, hash, isCurrent, remote: false, worktreePath: isCurrent ? null : worktree.trim() || null };
+    });
+}
 
 export type GitBranchOp = z.infer<typeof branchOp>;
 export type GitBranchOpOutput = z.output<typeof gitBranchOp.output>;
@@ -788,7 +807,7 @@ export function parseWorktreeList(
 }
 
 const normPath = (p: string) => p.toLowerCase().replace(/\\/g, "/").replace(/\/+$/, "");
-const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
+export const baseName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
 
 /** Group found repos into cards keyed by their main worktree; linked worktrees merge in. */
 export function groupRepos(found: { path: string; worktrees: ReturnType<typeof parseWorktreeList> }[]): RepoCard[] {

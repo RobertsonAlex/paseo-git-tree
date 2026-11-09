@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
-import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree.ts";
+import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, LOCAL_HEAD_FORMAT, parseLocalHeads, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree.ts";
 import { createCache } from "./cache.ts";
 import { countUntracked, runGit } from "./git.ts";
 import { dropStatusCache } from "./status.ts";
@@ -120,7 +120,7 @@ export async function getGitTree(input: Input): Promise<Output> {
       const [branchOut, remoteRefOut, currentOut] = await Promise.all([
         runGit(directory, [
           "for-each-ref",
-          "--format=%(refname:short)%09%(objectname)%09%(HEAD)",
+          `--format=${LOCAL_HEAD_FORMAT}`,
           "refs/heads",
         ]),
         runGit(directory, [
@@ -131,18 +131,7 @@ export async function getGitTree(input: Input): Promise<Output> {
         runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => ""),
       ]);
       const current = firstLine(currentOut).trim();
-      const locals = branchOut
-        .split("\n")
-        .filter((l) => l.trim() !== "")
-        .map((line) => {
-          const [name = "", hash = "", headFlag = ""] = line.split("\t");
-          return {
-            name,
-            hash,
-            isCurrent: headFlag.trim() === "*" || name === current,
-            remote: false,
-          };
-        });
+      const locals = parseLocalHeads(branchOut, current);
       const remoteHeads = remoteRefOut
         .split("\n")
         .filter((l) => l.trim() !== "")
@@ -151,7 +140,7 @@ export async function getGitTree(input: Input): Promise<Output> {
           return { name, hash };
         })
         .filter((r) => r.name && !r.name.endsWith("/HEAD"))
-        .map((r) => ({ name: r.name, hash: r.hash, isCurrent: false, remote: true }));
+        .map((r) => ({ name: r.name, hash: r.hash, isCurrent: false, remote: true, worktreePath: null }));
       heads = [...locals, ...remoteHeads];
     } catch {
       // Branch listing is best-effort; the graph is the main content.
@@ -441,6 +430,12 @@ async function localBranchExists(directory: string, name: string): Promise<boole
   }
 }
 
+/** The other worktree that has local `branch` checked out, or null. */
+async function worktreeOf(directory: string, branch: string): Promise<string | null> {
+  const out = await runGit(directory, ["for-each-ref", `--format=${LOCAL_HEAD_FORMAT}`, `refs/heads/${branch}`]).catch(() => "");
+  return parseLocalHeads(out, "").find((h) => h.name === branch)?.worktreePath ?? null;
+}
+
 export async function runBranchOp(
   input: RpcInput<typeof gitBranchOp>,
 ): Promise<RpcOutput<typeof gitBranchOp>> {
@@ -464,6 +459,10 @@ export async function runBranchOp(
       case "checkout": {
         const name = assertBranchName(input.name ?? "");
         const split = splitRemoteRef(name, remotes);
+        const local = split ? split.branch : name;
+        const elsewhere = await worktreeOf(directory, local);
+        // git would refuse ("already checked out at"); the client offers that worktree's workspace.
+        if (elsewhere) return { error: null, checkedOutAt: elsewhere };
         if (split) {
           if (await localBranchExists(directory, split.branch)) {
             await runGit(directory, ["checkout", split.branch]);
@@ -535,10 +534,10 @@ export async function runBranchOp(
         break;
       }
     }
-    return { error: null };
+    return { error: null, checkedOutAt: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { error: firstLine(message) || message };
+    return { error: firstLine(message) || message, checkedOutAt: null };
   } finally {
     // A conflicted merge/rebase/pull still changes the worktree.
     dropCaches(directory);
