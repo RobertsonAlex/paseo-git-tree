@@ -605,3 +605,20 @@ test("groupRepos keys case-insensitively on Windows-style paths", () => {
   const cards = groupRepos([{ path: "C:\\Dev\\App", worktrees: a }, { path: "c:/dev/app/", worktrees: b }]);
   assert.equal(cards.length, 1);
 });
+
+import { samePath, tabStateSchema } from "./git-tree.ts";
+
+test("tab state: restores a drill stack, rejects a bad scope; samePath ignores separators and case", () => {
+  const state = {
+    drill: [
+      { kind: "folder", directory: "C:\\Dev" },
+      { kind: "repo", directory: "C:/Dev/app", label: "app", marks: { abc: ["parent expects"] } },
+    ],
+    view: { directory: "C:/Dev/app", scope: "local", preview: "feature" },
+  };
+  assert.deepEqual(tabStateSchema.parse(state), state);
+  assert.equal(tabStateSchema.safeParse({ ...state, view: { ...state.view, scope: "nope" } }).success, false);
+  assert.equal(tabStateSchema.safeParse(undefined).success, false);
+  assert.equal(samePath("C:\\Dev\\App\\","c:/dev/app"), true);
+  assert.equal(samePath("C:/Dev/App/sub", "C:/Dev/App"), false);
+});

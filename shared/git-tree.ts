@@ -828,3 +828,34 @@ export function groupRepos(found: { path: string; worktrees: ReturnType<typeof p
   }
   return [...cards.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }
+
+/** One level of the drill stack; the top entry is what the panel shows.
+ *  `refreshOnMount` is set on a repo when the user comes back to it, so its
+ *  status is re-read fresh (ops inside a submodule only drop that submodule's
+ *  server caches). */
+export const viewEntrySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("repo"),
+    directory: z.string(),
+    label: z.string(),
+    extraRefs: z.array(z.string()).optional(),
+    marks: z.record(z.string(), z.array(z.string())).optional(),
+    markCheckedOut: z.boolean().optional(),
+    refreshOnMount: z.boolean().optional(),
+  }),
+  z.object({ kind: z.literal("folder"), directory: z.string() }),
+]);
+export type ViewEntry = z.output<typeof viewEntrySchema>;
+
+/** Persisted per panel tab: the drill stack, and scope/preview of the repo view on top of it. */
+export const tabStateSchema = z.object({
+  drill: z.array(viewEntrySchema),
+  view: z.object({ directory: z.string(), scope: treeScope, preview: z.string().nullable() }).nullable(),
+});
+export type TabState = z.output<typeof tabStateSchema>;
+export type SavedView = NonNullable<TabState["view"]>;
+export const EMPTY_TAB_STATE: TabState = { drill: [], view: null };
+
+/** Same folder, ignoring separators, a trailing slash and case. */
+export const samePath = (a: string, b: string) =>
+  a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();

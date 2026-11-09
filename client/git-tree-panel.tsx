@@ -37,6 +37,12 @@ import {
   type Submodule,
   parseBranchRef,
   splitRemoteRef,
+  tabStateSchema,
+  EMPTY_TAB_STATE,
+  samePath,
+  type SavedView,
+  type TabState,
+  type ViewEntry,
   baseName,
 } from "../shared/git-tree";
 import { RepoList } from "./repo-list";
@@ -2823,21 +2829,6 @@ function VirtualCommitList({
 
 // --- Panel ----------------------------------------------------------------------
 
-/** One level of the drill stack; the top entry is what the panel shows.
- *  `refreshOnMount` is set on a repo when the user comes back to it, so its
- *  status is re-read fresh (ops inside a submodule only drop that submodule's
- *  server caches). */
-type ViewEntry =
-  | {
-      kind: "repo";
-      directory: string;
-      label: string;
-      extraRefs?: string[];
-      marks?: Record<string, string[]>;
-      markCheckedOut?: boolean;
-      refreshOnMount?: boolean;
-    }
-  | { kind: "folder"; directory: string };
 
 /** Drill-in entry for submodule `s` of the repo at `dir`, with its parent's
  *  pointers marked on the graph. "checked out" is derived live by RepoView. */
@@ -2862,14 +2853,50 @@ function entryLabel(e: ViewEntry): string {
   return e.kind === "repo" ? e.label : e.directory.split(/[\\/]/).filter(Boolean).pop() ?? e.directory;
 }
 
-export function GitTreePanel({ theme, layout, workspaceId, navigation }: PluginWorkspacePanelProps) {
+export function GitTreePanel({ theme, layout, workspaceId, navigation, tab }: PluginWorkspacePanelProps) {
   const workspace = useWorkspace(workspaceId, (w) => ({
     directory: w.directory,
     name: w.name,
     projectKind: w.projectKind,
   }));
-  const [drill, setDrill] = useState<ViewEntry[]>([]);
+  // tab.state directly, not useTabState: its JsonValue bound rejects the optional ViewEntry fields.
+  // Restored once, then kept locally so drilling never waits on (or depends on) the host's store.
+  const [saved, setSaved] = useState<TabState>(() => {
+    const parsed = tabStateSchema.safeParse(tab.state);
+    return parsed.success ? parsed.data : EMPTY_TAB_STATE;
+  });
+  const save = (next: TabState) => {
+    setSaved(next);
+    tab.setState(next as unknown as Parameters<typeof tab.setState>[0]);
+  };
+  const drill = saved.drill;
+  // A new level (or going back) starts its view at the default scope, as before.
+  const setDrill = (next: ViewEntry[]) => save({ drill: next, view: null });
+  const saveView = (view: SavedView) => {
+    const cur = saved.view;
+    if (cur && cur.directory === view.directory && cur.scope === view.scope && cur.preview === view.preview) return;
+    save({ drill, view });
+  };
   const probe = useRpc(gitProbe);
+  /** A restored drill-in whose folder is gone (or no longer its own repo) falls back to the root. */
+  const [restoring, setRestoring] = useState(() => drill.length > 1);
+  useEffect(() => {
+    const entry = drill.length > 1 ? drill[drill.length - 1] : undefined;
+    if (!restoring || !entry) return;
+    let live = true;
+    probe({ directory: entry.directory })
+      .then((r) => r.kind === "repo" && r.root !== null && samePath(r.root, entry.directory))
+      .catch(() => false)
+      .then((ok) => {
+        if (!live) return;
+        if (!ok) save(EMPTY_TAB_STATE);
+        setRestoring(false);
+      });
+    return () => {
+      live = false;
+    };
+    // Mount-time check of the restored stack only.
+  }, [probe]);
   const openWorkspace = useRpc(gitOpenWorkspace);
   const toast = useToast();
   const directory = workspace?.directory;
@@ -2900,7 +2927,7 @@ export function GitTreePanel({ theme, layout, workspaceId, navigation }: PluginW
   // Git workspaces open straight to the graph without waiting for the probe;
   // anything else waits for it, so a folder never flashes a git error.
   const kind = probed?.directory === workspace.directory ? probed.kind : workspace.projectKind === "git" ? "repo" : null;
-  if (!kind) {
+  if (!kind || restoring) {
     return (
       <View style={{ flex: 1, backgroundColor: theme.colors.surface0, alignItems: "center", justifyContent: "center", gap: 8 }}>
         <Icon name="LoaderCircle" size={18} color={theme.colors.foregroundMuted} />
@@ -2982,6 +3009,8 @@ export function GitTreePanel({ theme, layout, workspaceId, navigation }: PluginW
       refreshOnMount={top.refreshOnMount}
       onOpenSubmodule={(s) => setDrill([...stack, submoduleEntry(top.directory, s)])}
       onOpenWorkspace={startWorkspace}
+      savedView={saved.view?.directory === top.directory ? saved.view : null}
+      onViewChange={(scope, preview) => saveView({ directory: top.directory, scope, preview })}
       header={header}
     />
   );
@@ -3004,6 +3033,9 @@ type RepoViewProps = {
   header?: ReactNode;
   /** First load bypasses the server caches (returning from a submodule). */
   refreshOnMount?: boolean;
+  /** Scope and preview restored from the tab, read on mount. */
+  savedView?: SavedView | null;
+  onViewChange?: (scope: TreeScope, preview: string | null) => void;
 };
 
 export function RepoView({
@@ -3017,6 +3049,8 @@ export function RepoView({
   onOpenWorkspace,
   header,
   refreshOnMount,
+  savedView,
+  onViewChange,
 }: RepoViewProps) {
   const getTree = useRpc(gitTree);
   const getStatus = useRpc(gitStatus);
@@ -3054,10 +3088,15 @@ export function RepoView({
   const [branchMenu, setBranchMenu] = useState<{ x: number; y: number; focus?: BranchHead } | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const menuOpen = useRef(false);
-  const [scope, setScope] = useState<TreeScope>("current");
-  const [previewRef, setPreviewRef] = useState<string | null>(null);
+  const [scope, setScope] = useState<TreeScope>(savedView?.scope ?? "current");
+  const [previewRef, setPreviewRef] = useState<string | null>(savedView?.preview ?? null);
   const previewHold = useRef<string | null>(null);
   previewHold.current = previewRef;
+  /** A restored preview whose ref is gone clears itself instead of showing the error. */
+  const restoredPreview = useRef(savedView?.preview ?? null);
+  const viewChange = useRef(onViewChange);
+  viewChange.current = onViewChange;
+  useEffect(() => viewChange.current?.(scope, previewRef), [scope, previewRef]);
   const loadGen = useRef(0);
   const statusGen = useRef(0);
   /** Bumped every time fresh tree data lands; expansion panels refetch their
@@ -3113,6 +3152,15 @@ export function RepoView({
           ...(fresh ? { fresh: true } : {}),
         }).then((next) => {
           if (id !== loadGen.current) return;
+          if (preview && preview === restoredPreview.current) {
+            restoredPreview.current = null;
+            if (next.error) {
+              previewHold.current = null;
+              setPreviewRef(null);
+              loadTree({ preview: null });
+              return;
+            }
+          }
           setData(next);
           setRpcError(null);
           setRefreshKey((k) => k + 1);
