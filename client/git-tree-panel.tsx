@@ -37,6 +37,7 @@ import {
   type Submodule,
   parseBranchRef,
   splitRemoteRef,
+  baseName,
 } from "../shared/git-tree";
 import { RepoList } from "./repo-list";
 import { SubmoduleStrip } from "./submodule-strip";
@@ -979,7 +980,7 @@ function ScopeMenu({
   );
 }
 
-type BranchHead = { name: string; hash: string; isCurrent: boolean; remote: boolean };
+type BranchHead = { name: string; hash: string; isCurrent: boolean; remote: boolean; worktreePath?: string | null };
 
 function resolveHead(
   name: string,
@@ -1007,20 +1008,26 @@ function BranchListRow({
   isCurrent,
   remote,
   previewing,
+  worktreePath,
   colors,
   onPrimary,
   onMore,
+  onOpenWorktree,
 }: {
   name: string;
   color: string;
   isCurrent: boolean;
   remote: boolean;
   previewing: boolean;
+  /** Other worktree this branch is checked out in. */
+  worktreePath?: string | null;
   colors: FloatColors;
   onPrimary: () => void;
   onMore: () => void;
+  onOpenWorktree?: (path: string) => void;
 }) {
   const [hovered, setHovered] = useState(false);
+  const [chipHovered, setChipHovered] = useState(false);
   return (
     <Pressable
       onPress={onPrimary}
@@ -1067,6 +1074,34 @@ function BranchListRow({
       ) : null}
       {isCurrent ? (
         <Text style={{ color, fontSize: 10, fontWeight: "700" }}>current</Text>
+      ) : null}
+      {worktreePath ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Checked out in ${worktreePath}`}
+          disabled={!onOpenWorktree}
+          onHoverIn={() => setChipHovered(true)}
+          onHoverOut={() => setChipHovered(false)}
+          onPress={(e) => {
+            (e as unknown as { stopPropagation?: () => void }).stopPropagation?.();
+            onOpenWorktree?.(worktreePath);
+          }}
+          {...({ title: worktreePath } as object)}
+          style={{
+            maxWidth: chipHovered ? 220 : 110,
+            paddingHorizontal: 6,
+            paddingVertical: 1,
+            borderRadius: 8,
+            borderWidth: 1,
+            borderColor: colors.ring,
+            backgroundColor: chipHovered && onOpenWorktree ? colors.hover : "transparent",
+          }}
+        >
+          {/* Hover swaps in the full path: plugin UI has no tooltip component. */}
+          <Text numberOfLines={1} ellipsizeMode="head" style={{ color: colors.fgMuted, fontSize: 10 }}>
+            {chipHovered ? worktreePath : `in ${baseName(worktreePath)}`}
+          </Text>
+        </Pressable>
       ) : null}
       <Pressable
         accessibilityRole="button"
@@ -1161,6 +1196,7 @@ function BranchMenu({
   onDismiss,
   onPreview,
   onOp,
+  onOpenWorkspace,
 }: {
   x: number;
   y: number;
@@ -1175,6 +1211,8 @@ function BranchMenu({
   onDismiss: () => void;
   onPreview: (name: string) => void;
   onOp: (req: BranchOpRequest) => void;
+  /** Opens (or creates) the Paseo workspace for a folder; absent without navigation. */
+  onOpenWorkspace?: (path: string) => void;
 }) {
   const current = heads.find((h) => h.isCurrent && !h.remote);
   const localNames = useMemo(
@@ -1216,6 +1254,10 @@ function BranchMenu({
   };
 
   const localFamily = (h: BranchHead) => parseBranchRef(h.name, remotes)?.family ?? h.name;
+  /** Looked up in live heads, so a checkout refused by the server shows here after the reload. */
+  const worktreeOf = (h: BranchHead) =>
+    heads.find((x) => !x.remote && x.name === (h.remote ? localFamily(h) : h.name))?.worktreePath ?? null;
+  const elsewhere = active ? worktreeOf(active) : null;
 
   return (
     <>
@@ -1303,6 +1345,15 @@ function BranchMenu({
               ) : null
             ) : (
               <>
+                {elsewhere ? (
+                  <BranchAction
+                    label={`Checked out in ${baseName(elsewhere)}${onOpenWorkspace ? " — Open its workspace" : ""}`}
+                    hint={elsewhere}
+                    colors={colors}
+                    disabled={busy || !onOpenWorkspace}
+                    onPress={() => onOpenWorkspace?.(elsewhere)}
+                  />
+                ) : (
                 <BranchAction
                   label="Checkout"
                   hint={
@@ -1316,6 +1367,7 @@ function BranchMenu({
                   disabled={busy}
                   onPress={() => onOp({ op: "checkout", name: active.name })}
                 />
+                )}
                 {current && !active.remote ? (
                   <>
                     <BranchAction
@@ -1608,9 +1660,11 @@ function BranchMenu({
                 isCurrent={h.isCurrent}
                 remote={false}
                 previewing={preview === h.name}
+                worktreePath={h.worktreePath}
                 colors={colors}
                 onPrimary={() => onPreview(h.name)}
                 onMore={() => openActions(h)}
+                onOpenWorktree={onOpenWorkspace}
               />
             ))}
             {filtered.remoteHeads.length > 0 ? <BranchSectionLabel label="Remote" colors={colors} /> : null}
@@ -2927,6 +2981,7 @@ export function GitTreePanel({ theme, layout, workspaceId, navigation }: PluginW
       markCheckedOut={top.markCheckedOut}
       refreshOnMount={top.refreshOnMount}
       onOpenSubmodule={(s) => setDrill([...stack, submoduleEntry(top.directory, s)])}
+      onOpenWorkspace={startWorkspace}
       header={header}
     />
   );
@@ -2943,6 +2998,8 @@ type RepoViewProps = {
   /** Chip the live HEAD commit "checked out" (submodule views). */
   markCheckedOut?: boolean;
   onOpenSubmodule?: (sub: Submodule) => void;
+  /** Opens the Paseo workspace for a folder (a branch's other worktree). */
+  onOpenWorkspace?: (path: string) => void;
   /** Drawn above the repo header (drill-stack back button and breadcrumb). */
   header?: ReactNode;
   /** First load bypasses the server caches (returning from a submodule). */
@@ -2957,6 +3014,7 @@ export function RepoView({
   marks,
   markCheckedOut,
   onOpenSubmodule,
+  onOpenWorkspace,
   header,
   refreshOnMount,
 }: RepoViewProps) {
@@ -3236,6 +3294,12 @@ export function RepoView({
           if (result.error) {
             toast.error(result.error);
             // A failed merge/rebase/pull can still leave the worktree changed.
+            loadTree({ fresh: true });
+            return;
+          }
+          if (result.checkedOutAt) {
+            // The menu stays open; the reloaded heads turn Checkout into "Open its workspace".
+            toast.show(`Checked out in ${result.checkedOutAt}`);
             loadTree({ fresh: true });
             return;
           }
@@ -3766,6 +3830,7 @@ export function RepoView({
           onDismiss={() => setBranchMenu(null)}
           onPreview={handlePreview}
           onOp={handleBranchOp}
+          onOpenWorkspace={onOpenWorkspace}
         />
       ) : null}
       {scopeMenu ? (
