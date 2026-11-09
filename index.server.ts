@@ -8,7 +8,7 @@ import {
   runBranchOp,
   runCommitOp,
 } from "./server/git-tree";
-import { getFolderStatus, getProbe, getRepos, openWorkspace } from "./server/repos";
+import { dropRepoCache, getFolderStatus, getProbe, getRepos, openWorkspace } from "./server/repos";
 import { getStatus } from "./server/status";
 import {
   commitCompare,
@@ -38,5 +38,14 @@ export default function contribute(server: PluginServerContext) {
   server.handle(gitRepos, getRepos);
   server.handle(gitFolderStatus, getFolderStatus);
   server.handle(gitOpenWorkspace, openWorkspace);
-  return () => {};
+
+  // server.addHook arrives in Paseo 0.15 and isn't in the 0.14 SDK types; on 0.14 the cache just never expires.
+  const hooks = server as unknown as { addHook?: (name: string, handler: () => Promise<void>) => () => void };
+  const removers =
+    typeof hooks.addHook === "function"
+      ? ["worktree.create.after", "workspace.archive.after"].map((name) => hooks.addHook!(name, async () => dropRepoCache()))
+      : [];
+  return () => {
+    for (const remove of removers.splice(0)) remove();
+  };
 }

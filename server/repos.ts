@@ -63,6 +63,11 @@ export async function getProbe(input: RpcInput<typeof gitProbe>): Promise<RpcOut
 
 const cache = createCache<RepoCard[]>();
 
+/** Forget every folder's repo cards (a worktree was created or a workspace archived). */
+export function dropRepoCache(): void {
+  cache.drop("");
+}
+
 export async function getRepos(input: RpcInput<typeof gitRepos>): Promise<RpcOutput<typeof gitRepos>> {
   const key = `${input.directory}|repos`;
   const hit = input.fresh ? undefined : cache.get(key);

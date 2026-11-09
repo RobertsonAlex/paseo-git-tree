@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { findRepos, getFolderStatus, getProbe, getRepos, openWorkspace } from "./repos.ts";
+import { dropRepoCache, findRepos, getFolderStatus, getProbe, getRepos, openWorkspace } from "./repos.ts";
 import { git, makeTempRepo } from "./test-helpers.ts";
 
 const scratch = () => mkdtemp(path.join(tmpdir(), "git-tree-walk-"));
@@ -63,6 +63,8 @@ test("repos groups a worktree under its main repo", async () => {
   assert.equal(res.repos[0].folders.length, 2);
   assert.equal(res.repos[0].folders[0].isMain, true);
   assert.equal((await getRepos({ directory: root })).cached, true);
+  dropRepoCache();
+  assert.equal((await getRepos({ directory: root })).cached, false);
 });
 
 test("folder-status reports branch, changed count and submodulesOk", async () => {
