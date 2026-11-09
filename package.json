@@ -1,6 +1,6 @@
 {
   "name": "paseo-git-tree",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "private": true,
   "description": "Git branch tree panel for Paseo: a lane-based commit graph (git log --graph) as a workspace tab, with branch actions, search, and commit diffs",

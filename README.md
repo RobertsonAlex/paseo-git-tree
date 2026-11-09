@@ -23,6 +23,8 @@ A [Paseo](https://paseo.sh) plugin that draws the current workspace's branch his
 | **Rename-aware files** | File lists show R status with old ⟶ new paths. |
 | **Manual refresh** | ↻ button in the panel header. |
 | **Folder workspaces** | When the workspace folder isn't a repo, it lists the repos inside as cards, with each repo's worktree folders, branch and changed-file count; drill into any folder or start its workspace. |
+| **Worktree chip** | A branch checked out in another worktree shows `in <folder>` in the branch list (hover for the full path); click it, or **Open its workspace** in its branch menu, to jump to that worktree's workspace. |
+| **Per-tab state** | Each Git Tree tab remembers its drill-in, scope and preview across reopen and app reload. |
 | **Submodules** | A strip under the header shows each submodule's branch, state and dirtiness; drill in to see where the parent's pointer sits in its graph. |
 | **Fast load** | The graph renders as soon as `git log` returns; the uncommitted summary and submodule status fill in in the background. Large or binary untracked files are not line-counted. |
 
@@ -42,7 +44,8 @@ paseo plugin ls
 
 Requirements:
 
-- Paseo 0.8.0 or newer (runtime plugin entries; verified against the bundled `paseo` CLI)
+- Paseo 0.14.0 or newer; on 0.15+ the folder list also refreshes when a worktree is created or a workspace archived
+- Git 2.24 or newer for the worktree chip
 - `pluginsEnabled: true` in the daemon's `config.json` (Settings → Plugins in the desktop app)
 
 ## Usage
@@ -95,7 +98,7 @@ The list has a filter box and a `+ Create branch…` entry, which can check the 
 
 Right-click, long-press, or ⋯ opens that branch's actions:
 
-- **Checkout** — remotes use `git checkout --track`, or switch to the existing local branch of the same name.
+- **Checkout** — remotes use `git checkout --track`, or switch to the existing local branch of the same name. A branch checked out in another worktree offers **Checked out in <folder> — Open its workspace** instead.
 - **Merge / rebase** into the current branch.
 - **Pull / fetch** for remotes.
 - **Push**, or force push with `--force-with-lease`.
@@ -113,7 +116,7 @@ If the workspace folder is not itself a git repo, the panel shows a card per rep
 
 - Click a folder to drill into its graph; back returns to the list.
 - **Start workspace** opens or creates a Paseo workspace for that folder.
-- ↻ rescans the folder; results are otherwise cached for the daemon run.
+- ↻ rescans the folder; results are otherwise cached for the daemon run (on Paseo 0.15+, until a worktree is created or a workspace archived).
 
 ### Submodules
 
@@ -145,7 +148,7 @@ paseo-git-tree/
 └── README.md / README.zh-CN.md
 ```
 
-`client/`, `server/`, and `shared/` are compiler boundaries in Paseo 0.8: the client
+`client/`, `server/`, and `shared/` are compiler boundaries (Paseo 0.8+): the client
 bundle compiles only `client/` + `shared/`, the server bundle only `server/` + `shared/`.
 
 ## Testing
