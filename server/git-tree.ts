@@ -3,7 +3,8 @@ import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import { commitCompare, commitCompareDiff, commitDetail, commitDiff, computeGraph, gitBranchOp, LOCAL_HEAD_FORMAT, parseLocalHeads, gitCommitOp, gitTree, isUncommittedHash, refVisibleInScope, splitRemoteRef, UNCOMMITTED_HASH } from "../shared/git-tree.ts";
 import { createCache } from "./cache.ts";
 import { countUntracked, runGit } from "./git.ts";
-import { dropStatusCache } from "./status.ts";
+import { overlaps } from "./live.ts";
+import { dropStatusCache, dropStatusCacheFor } from "./status.ts";
 
 type Input = RpcInput<typeof gitTree>;
 type Output = RpcOutput<typeof gitTree>;
@@ -13,6 +14,12 @@ const graphCache = createCache<Output>();
 function dropCaches(directory: string): void {
   graphCache.drop(`${directory}|`);
   dropStatusCache(`${directory}|`);
+}
+
+/** Drop graph and status caches for every repo overlapping `directory`. */
+export function dropCachesFor(directory: string): void {
+  graphCache.dropDirs((d) => overlaps(d, directory));
+  dropStatusCacheFor(directory);
 }
 
 function firstLine(text: string): string {

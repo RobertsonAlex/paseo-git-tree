@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 
 /**
@@ -859,3 +859,10 @@ export const EMPTY_TAB_STATE: TabState = { drill: [], view: null };
 /** Same folder, ignoring separators, a trailing slash and case. */
 export const samePath = (a: string, b: string) =>
   a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+/** Pushed to an open panel when a hook saw its repo change; the panel then reloads. */
+export const repoChanged = defineSubscription({
+  name: "gittree.repo-changed",
+  input: z.object({ directory: z.string().min(1) }),
+  event: z.object({ type: z.literal("changed") }),
+});

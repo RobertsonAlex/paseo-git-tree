@@ -14,6 +14,7 @@ import {
 } from "../shared/git-tree.ts";
 import { createCache } from "./cache.ts";
 import { runGit } from "./git.ts";
+import { overlaps } from "./live.ts";
 
 const DEFAULT_SKIP = new Set(["node_modules", ".venv", "venv", "__pycache__", "bin", "obj"]);
 
@@ -66,6 +67,11 @@ const cache = createCache<RepoCard[]>();
 /** Forget every folder's repo cards (a worktree was created or a workspace archived). */
 export function dropRepoCache(): void {
   cache.drop("");
+}
+
+/** Forget cached repo cards for folders overlapping `directory`. */
+export function dropRepoCacheFor(directory: string): void {
+  cache.dropDirs((d) => overlaps(d, directory));
 }
 
 export async function getRepos(input: RpcInput<typeof gitRepos>): Promise<RpcOutput<typeof gitRepos>> {

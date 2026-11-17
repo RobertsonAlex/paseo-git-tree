@@ -10,6 +10,7 @@ import {
 } from "../shared/git-tree.ts";
 import { createCache } from "./cache.ts";
 import { countUntracked, runGit } from "./git.ts";
+import { overlaps } from "./live.ts";
 
 type Input = RpcInput<typeof gitStatus>;
 
@@ -17,6 +18,10 @@ const cache = createCache<GitStatusOutput>();
 
 export function dropStatusCache(prefix: string): void {
   cache.drop(prefix);
+}
+
+export function dropStatusCacheFor(directory: string): void {
+  cache.dropDirs((d) => overlaps(d, directory));
 }
 
 function unquotePorcelainPath(raw: string): string {
