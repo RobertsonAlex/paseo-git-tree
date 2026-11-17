@@ -1,6 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
-import { useRpc, useWorkspace, type PluginHostProps, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import { Icon, useToast } from "@getpaseo/plugin/client/ui";
+import { useComposers, useRpc, useSubscription, useWorkspace, type PluginHostProps, type PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { copyText, Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import {
@@ -14,6 +14,7 @@ import {
   gitOpenWorkspace,
   gitProbe,
   gitStatus,
+  repoChanged,
   gitTree,
   graphColor,
   assignRefColors,
@@ -65,6 +66,8 @@ const GRAPH_PAD_RIGHT = 6;
 const COLLAPSED_ROW_H = ROW_HEIGHT + CARD_BORDER * 2 + CARD_GAP;
 const LIST_PAD_X = 8;
 const COMMIT_LIMIT = 500;
+/** Quiet period before a live-triggered reload. */
+const LIVE_DEBOUNCE_MS = 1500;
 
 function laneX(lane: number): number {
   return GRAPH_PAD_X + lane * LANE_WIDTH;
@@ -218,55 +221,7 @@ function HeaderIconButton({
   );
 }
 
-async function copyToClipboard(text: string): Promise<boolean> {
-  const g = globalThis as {
-    navigator?: { clipboard?: { writeText: (value: string) => Promise<void> } };
-    document?: {
-      body: { appendChild(node: unknown): void; removeChild(node: unknown): void } | null;
-      execCommand: (command: string) => boolean;
-      createElement(tag: string): {
-        value: string;
-        style: { cssText: string };
-        setAttribute(name: string, value: string): void;
-        focus(): void;
-        select(): void;
-        setSelectionRange(start: number, end: number): void;
-      };
-    };
-  };
-
-  // execCommand still works inside plugin iframes that lack clipboard-write.
-  // Must run in the click turn (user gesture).
-  try {
-    const doc = g.document;
-    if (doc?.body) {
-      const el = doc.createElement("textarea");
-      el.value = text;
-      el.setAttribute("readonly", "");
-      el.style.cssText = "position:fixed;top:0;left:-9999px;width:1px;height:1px;opacity:0";
-      doc.body.appendChild(el);
-      el.focus();
-      el.select();
-      el.setSelectionRange(0, text.length);
-      const ok = doc.execCommand("copy");
-      doc.body.removeChild(el);
-      if (ok) return true;
-    }
-  } catch {
-    // fall through to Clipboard API
-  }
-
-  try {
-    const clip = g.navigator?.clipboard;
-    if (clip && typeof clip.writeText === "function") {
-      await clip.writeText(text);
-      return true;
-    }
-  } catch {
-    // no clipboard access
-  }
-  return false;
-}
+const copyToClipboard = (text: string): Promise<boolean> => copyText(text).then(() => true, () => false);
 
 type WebContextMenuEvent = {
   preventDefault(): void;
@@ -631,6 +586,7 @@ function CommitMenu({
   colors,
   busy,
   onCopy,
+  onSend,
   onAct,
   onDismiss,
 }: {
@@ -641,6 +597,7 @@ function CommitMenu({
   colors: FloatColors;
   busy: boolean;
   onCopy: (kind: "message" | "hash") => void;
+  onSend: () => void;
   onAct: (req: {
     op: GitCommitOp;
     hash: string;
@@ -882,6 +839,7 @@ function CommitMenu({
             colors={colors}
             onPress={() => onCopy("hash")}
           />
+          <MenuItem label="Send to agent" hint={`${row.shortHash} ${row.subject}`} colors={colors} onPress={onSend} />
         </ScrollView>
       </View>
     </>
@@ -895,6 +853,7 @@ function FileMenu({
   colors,
   onFilter,
   onCopy,
+  onSend,
   onDismiss,
 }: {
   x: number;
@@ -903,6 +862,7 @@ function FileMenu({
   colors: FloatColors;
   onFilter: () => void;
   onCopy: () => void;
+  onSend: () => void;
   onDismiss: () => void;
 }) {
   return (
@@ -927,6 +887,7 @@ function FileMenu({
       >
         <MenuItem label="Filter commits by this file" hint={`f: ${path}`} colors={colors} onPress={onFilter} />
         <MenuItem label="Copy path" hint={path} colors={colors} onPress={onCopy} />
+        <MenuItem label="Send to agent" hint={path} colors={colors} onPress={onSend} />
       </View>
     </>
   );
@@ -2858,6 +2819,7 @@ export function GitTreePanel({ theme, layout, workspaceId, navigation, tab }: Pl
     directory: w.directory,
     name: w.name,
     projectKind: w.projectKind,
+    diffKey: w.diffStat ? `${w.diffStat.additions}/${w.diffStat.deletions}` : "",
   }));
   // tab.state directly, not useTabState: its JsonValue bound rejects the optional ViewEntry fields.
   // Restored once, then kept locally so drilling never waits on (or depends on) the host's store.
@@ -3007,6 +2969,7 @@ export function GitTreePanel({ theme, layout, workspaceId, navigation, tab }: Pl
       marks={top.marks}
       markCheckedOut={top.markCheckedOut}
       refreshOnMount={top.refreshOnMount}
+      liveKey={workspace.diffKey}
       onOpenSubmodule={(s) => setDrill([...stack, submoduleEntry(top.directory, s)])}
       onOpenWorkspace={startWorkspace}
       savedView={saved.view?.directory === top.directory ? saved.view : null}
@@ -3036,6 +2999,8 @@ type RepoViewProps = {
   /** Scope and preview restored from the tab, read on mount. */
   savedView?: SavedView | null;
   onViewChange?: (scope: TreeScope, preview: string | null) => void;
+  /** Changes when the workspace snapshot's diffStat does; triggers a debounced reload. */
+  liveKey?: string;
 };
 
 export function RepoView({
@@ -3051,12 +3016,28 @@ export function RepoView({
   refreshOnMount,
   savedView,
   onViewChange,
+  liveKey,
 }: RepoViewProps) {
   const getTree = useRpc(gitTree);
   const getStatus = useRpc(gitStatus);
   const runBranch = useRpc(gitBranchOp);
   const runCommit = useRpc(gitCommitOp);
   const toast = useToast();
+  const [agentComposer] = useComposers({ focused: true });
+  /** Inserts into the focused agent's composer and focuses it; copies with a toast when there is none. */
+  const sendToAgent = useCallback(
+    async (text: string) => {
+      try {
+        if (!agentComposer) throw new Error("no composer");
+        agentComposer.insertText(text + " ");
+        await agentComposer.focus();
+        toast.show("Sent to agent");
+      } catch {
+        toast.show((await copyToClipboard(text)) ? "No agent composer, copied instead" : "Couldn't send or copy");
+      }
+    },
+    [agentComposer, toast],
+  );
   const shellRef = useRef<View>(null);
   const branchTriggerRef = useRef<View>(null);
   const scopeTriggerRef = useRef<View>(null);
@@ -3191,6 +3172,33 @@ export function RepoView({
   }, [loadTree]);
 
   const refresh = useCallback(() => loadTree({ sync: true, fresh: true }), [loadTree]);
+
+  // Live reload: a server push (agent turn ended / archived) or a diffStat change reloads after a quiet
+  // period, and waits while a menu is open, a git op runs, or the user is typing in search.
+  const busyRef = useRef(false);
+  busyRef.current = !!(menu || fileMenu || branchMenu || scopeMenu || branchBusy || searching);
+  const reloadRef = useRef(loadTree);
+  reloadRef.current = loadTree;
+  const liveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestReload = useCallback(() => {
+    if (liveTimer.current) clearTimeout(liveTimer.current);
+    const tick = () => {
+      if (busyRef.current) liveTimer.current = setTimeout(tick, LIVE_DEBOUNCE_MS);
+      else {
+        liveTimer.current = null;
+        reloadRef.current({ fresh: true });
+      }
+    };
+    liveTimer.current = setTimeout(tick, LIVE_DEBOUNCE_MS);
+  }, []);
+  useEffect(() => () => void (liveTimer.current && clearTimeout(liveTimer.current)), []);
+  useSubscription(repoChanged, { directory }, requestReload);
+  const seenLiveKey = useRef(liveKey);
+  useEffect(() => {
+    if (seenLiveKey.current === liveKey) return;
+    seenLiveKey.current = liveKey;
+    requestReload();
+  }, [liveKey, requestReload]);
 
   const toggleCommit = useCallback((hash: string) => {
     setExpandedHash((cur) => (cur === hash ? null : hash));
@@ -3824,6 +3832,12 @@ export function RepoView({
             setMenu(null);
           }}
           onAct={handleCommitOp}
+          onSend={() => {
+            const target = menu.row;
+            menuOpen.current = false;
+            setMenu(null);
+            void sendToAgent(`${target.shortHash} ${target.subject}`);
+          }}
           onCopy={(kind) => {
             const target = menu.row;
             const text = kind === "message" ? target.subject : target.hash;
@@ -3852,6 +3866,12 @@ export function RepoView({
             setFileMenu(null);
             setSearching(true);
             setQuery(`f: ${path}`);
+          }}
+          onSend={() => {
+            const path = fileMenu.path;
+            menuOpen.current = false;
+            setFileMenu(null);
+            void sendToAgent(path);
           }}
           onCopy={() => {
             const path = fileMenu.path;
